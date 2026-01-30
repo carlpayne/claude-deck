@@ -1,0 +1,16 @@
+# Build artifacts
+/target/
+
+# IDE
+.idea/
+*.iml
+
+# macOS
+.DS_Store
+
+# Editor backups
+*~
+*.swp
+
+# Environment
+.env
