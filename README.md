@@ -3,9 +3,9 @@
 A hardware controller for [Claude Code](https://claude.ai/claude-code) using the AJAZZ AKP05E / Mirabox N4 macro pad
 with LCD buttons and rotary encoders.
 
-![AJAZZ AKP05E](https://via.placeholder.com/600x300?text=AJAZZ+AKP05E+Device)
-
+![img.png](img.png)
 ## Features
+
 
 - **10 LCD buttons** with custom labels and color-coded functions
 - **4 rotary encoders** for scrolling, model selection, and navigation
@@ -23,7 +23,7 @@ with LCD buttons and rotary encoders.
 
 ```bash
 # Clone the repository
-git clone https://github.com/yourusername/claude-deck.git
+git clone https://github.com/carlpayne/claude-deck.git
 cd claude-deck
 
 # Build
