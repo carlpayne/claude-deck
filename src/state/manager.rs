@@ -21,8 +21,8 @@ pub struct AppState {
     // Claude Code state
     /// Current task/tool name displayed on strip
     pub task_name: String,
-    /// Progress percentage (0-100)
-    pub progress: u8,
+    /// Detail about current tool (file path, command preview, etc.)
+    pub tool_detail: Option<String>,
     /// Current model name
     pub model: String,
     /// Index in MODELS array
@@ -56,7 +56,7 @@ impl AppState {
     pub fn new() -> Self {
         Self {
             task_name: "READY".to_string(),
-            progress: 0,
+            tool_detail: None,
             model: "opus".to_string(),
             model_index: 0,
             model_selecting: false,
@@ -113,7 +113,7 @@ impl AppState {
     /// Reset to initial state
     pub fn reset(&mut self) {
         self.task_name = "READY".to_string();
-        self.progress = 0;
+        self.tool_detail = None;
         self.waiting_for_input = false;
         self.input_type = None;
     }

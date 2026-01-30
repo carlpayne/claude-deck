@@ -110,26 +110,45 @@ fn render_task_button(img: &mut RgbImage, font: &Font, state: &AppState) {
         ORANGE
     } else if state.task_name == "READY" {
         GREEN
+    } else if state.task_name == "THINKING" {
+        BRIGHT_PURPLE
     } else {
         WHITE
     };
 
-    // Truncate task name if too long
-    let task = if state.task_name.len() > 10 {
-        format!("{}...", &state.task_name[..7])
+    // Line 1: Task/status name (centered)
+    let task = if state.task_name.len() > 12 {
+        format!("{}...", &state.task_name[..9])
     } else {
         state.task_name.clone()
     };
 
     let task_width = text_width(font, &task, 14.0);
     let x = ((STRIP_BUTTON_WIDTH as i32 - task_width) / 2).max(4);
-    draw_text(img, font, &task, x, 50, 14.0, task_color);
+    draw_text(img, font, &task, x, 32, 14.0, task_color);
 
-    // Progress bar if available
-    if state.progress > 0 {
-        draw_mini_progress_bar(img, 12, 82, STRIP_BUTTON_WIDTH - 24, 12, state.progress);
-    } else if state.waiting_for_input {
-        draw_text(img, font, "WAITING...", 30, 82, 10.0, ORANGE);
+    // Line 2: Tool detail (file/command preview)
+    if let Some(ref detail) = state.tool_detail {
+        let detail_str = if detail.len() > 14 {
+            format!("{}...", &detail[..11])
+        } else {
+            detail.clone()
+        };
+        let detail_width = text_width(font, &detail_str, 11.0);
+        let x = ((STRIP_BUTTON_WIDTH as i32 - detail_width) / 2).max(4);
+        draw_text(img, font, &detail_str, x, 55, 11.0, GRAY);
+    }
+
+    // Line 3: Status indicator
+    if state.waiting_for_input {
+        let wait_width = text_width(font, "WAITING", 10.0);
+        let x = ((STRIP_BUTTON_WIDTH as i32 - wait_width) / 2).max(4);
+        draw_text(img, font, "WAITING", x, 78, 10.0, ORANGE);
+    } else if state.task_name == "THINKING" {
+        // Animated dots would be nice, but for now just show dots
+        let dots_width = text_width(font, "...", 12.0);
+        let x = ((STRIP_BUTTON_WIDTH as i32 - dots_width) / 2).max(4);
+        draw_text(img, font, "...", x, 78, 12.0, BRIGHT_PURPLE);
     }
 }
 
@@ -152,28 +171,6 @@ fn render_mode_button(img: &mut RgbImage, font: &Font, state: &AppState) {
         draw_text(img, font, "READY", x, 48, 18.0, GRAY);
         draw_text(img, font, "press MIC", 32, 85, 10.0, Rgb([80, 90, 100]));
     }
-}
-
-/// Draw a mini progress bar
-fn draw_mini_progress_bar(
-    img: &mut RgbImage,
-    x: u32,
-    y: u32,
-    width: u32,
-    height: u32,
-    percent: u8,
-) {
-    // Background
-    draw_filled_rect(img, x, y, width, height, Rgb([25, 28, 35]));
-
-    // Filled portion
-    let filled = (width as f32 * percent as f32 / 100.0) as u32;
-    if filled > 0 {
-        draw_filled_rect(img, x, y, filled, height, GREEN);
-    }
-
-    // Border
-    draw_rect_outline(img, x, y, width, height, Rgb([50, 55, 65]));
 }
 
 /// Draw styled border around strip button (3D effect)
@@ -225,7 +222,7 @@ pub fn render_strip_image(font: &Font, state: &AppState) -> Result<RgbImage> {
     Ok(img)
 }
 
-/// Draw the task name and progress bar
+/// Draw the task name and tool detail
 fn draw_task_section(img: &mut RgbImage, font: &Font, state: &AppState) {
     let y_offset = 12;
 
@@ -242,9 +239,9 @@ fn draw_task_section(img: &mut RgbImage, font: &Font, state: &AppState) {
     };
     draw_text(img, font, &state.task_name, 70, y_offset, 14.0, task_color);
 
-    // Progress bar (if progress > 0)
-    if state.progress > 0 {
-        draw_progress_bar(img, 300, y_offset as u32 + 2, 160, 16, state.progress);
+    // Tool detail if available
+    if let Some(ref detail) = state.tool_detail {
+        draw_text(img, font, detail, 200, y_offset, 12.0, GRAY);
     }
 }
 
@@ -313,55 +310,11 @@ fn draw_model_selector(img: &mut RgbImage, font: &Font, state: &AppState, y: i32
     );
 }
 
-/// Draw a progress bar
-fn draw_progress_bar(img: &mut RgbImage, x: u32, y: u32, width: u32, height: u32, percent: u8) {
-    let percent = percent.min(100);
-
-    // Background
-    draw_filled_rect(img, x, y, width, height, Rgb([40, 40, 50]));
-
-    // Filled portion
-    let filled_width = (width as f32 * percent as f32 / 100.0) as u32;
-    if filled_width > 0 {
-        draw_filled_rect(img, x, y, filled_width, height, GREEN);
-    }
-
-    // Border
-    draw_rect_outline(img, x, y, width, height, Rgb([60, 60, 80]));
-
-    // Percentage text
-    // let pct_text = format!("{}%", percent);
-    // draw_text_centered(img, font, &pct_text, x + width / 2, y + 2, 12.0, WHITE);
-}
-
 /// Draw a separator line
 fn draw_separator(img: &mut RgbImage, y: u32) {
     let color = Rgb([40, 40, 60]);
     for x in 10..(STRIP_WIDTH - 10) {
         img.put_pixel(x, y, color);
-    }
-}
-
-/// Draw a rectangle outline
-fn draw_rect_outline(img: &mut RgbImage, x: u32, y: u32, width: u32, height: u32, color: Rgb<u8>) {
-    // Top and bottom
-    for px in x..(x + width).min(img.width()) {
-        if y < img.height() {
-            img.put_pixel(px, y, color);
-        }
-        if y + height - 1 < img.height() {
-            img.put_pixel(px, y + height - 1, color);
-        }
-    }
-
-    // Left and right
-    for py in y..(y + height).min(img.height()) {
-        if x < img.width() {
-            img.put_pixel(x, py, color);
-        }
-        if x + width - 1 < img.width() {
-            img.put_pixel(x + width - 1, py, color);
-        }
     }
 }
 

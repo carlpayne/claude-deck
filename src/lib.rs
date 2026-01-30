@@ -228,6 +228,12 @@ impl App {
                 changed = true;
             }
 
+            // Update tool detail
+            if state.tool_detail != status.tool_detail {
+                state.tool_detail = status.tool_detail;
+                changed = true;
+            }
+
             // Update waiting for input
             if state.waiting_for_input != status.waiting_for_input {
                 state.waiting_for_input = status.waiting_for_input;

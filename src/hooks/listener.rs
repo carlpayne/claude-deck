@@ -12,8 +12,9 @@ use crate::state::{AppState, InputType};
 /// State update from hooks
 #[derive(Debug, Deserialize)]
 pub struct StateUpdate {
+    #[serde(alias = "task")]
     pub task_name: Option<String>,
-    pub progress: Option<u8>,
+    pub tool_detail: Option<String>,
     pub waiting_for_input: Option<bool>,
     pub input_type: Option<String>,
     pub model: Option<String>,
@@ -89,10 +90,9 @@ impl HooksListener {
             state.task_name = task;
         }
 
-        if let Some(progress) = update.progress {
-            debug!("Hook update: progress = {}", progress);
-            state.progress = progress.min(100);
-        }
+        // Always update tool_detail (can be None to clear it)
+        debug!("Hook update: tool_detail = {:?}", update.tool_detail);
+        state.tool_detail = update.tool_detail;
 
         if let Some(waiting) = update.waiting_for_input {
             debug!("Hook update: waiting_for_input = {}", waiting);

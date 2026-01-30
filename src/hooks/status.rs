@@ -7,7 +7,8 @@ use tracing::{debug, warn};
 
 /// Status file location
 pub fn status_file_path() -> PathBuf {
-    PathBuf::from("/tmp/claude-deck-status.json")
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    PathBuf::from(home).join(".claude-deck/state.json")
 }
 
 /// Status information from Claude Code hooks
@@ -16,6 +17,10 @@ pub struct ClaudeStatus {
     /// Current action/task being performed
     #[serde(default)]
     pub task: String,
+
+    /// Detail about the current tool (file path, command, etc.)
+    #[serde(default)]
+    pub tool_detail: Option<String>,
 
     /// Whether Claude is waiting for user input/permission
     #[serde(default)]
@@ -28,14 +33,6 @@ pub struct ClaudeStatus {
     /// Current model being used
     #[serde(default)]
     pub model: Option<String>,
-
-    /// Session cost in dollars
-    #[serde(default)]
-    pub cost: f64,
-
-    /// Total tokens used
-    #[serde(default)]
-    pub tokens: u64,
 
     /// Whether Claude is currently processing
     #[serde(default)]
