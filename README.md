@@ -134,14 +134,24 @@ Options:
 
 ## Troubleshooting
 
+### Recommended startup order
+
+For best results, **start claude-deck first, then connect the device**:
+
+1. Run `cargo run --release`
+2. Plug in the device
+
+The app will retry until it finds the device, and this timing works well with the device's boot sequence.
+
 ### Device not displaying anything
 
-1. Unplug the device
-2. Wait 3 seconds
-3. Plug it back in
-4. Run `cargo run`
+If the device gets into a bad state:
 
-The device needs a physical reconnect if it gets into a bad state.
+1. Quit claude-deck
+2. Unplug the device
+3. Wait 3 seconds
+4. Start claude-deck again
+5. Plug in the device
 
 ### Voice dictation not working
 
