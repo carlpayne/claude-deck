@@ -6,12 +6,15 @@ with LCD buttons and rotary encoders.
 ![img.png](img.png)
 ## Features
 
-
 - **10 LCD buttons** with custom labels and color-coded functions
 - **4 rotary encoders** for scrolling, model selection, and navigation
 - **LCD strip** showing connection status, current model, task info, and mic status
 - **Voice dictation** integration via macOS dictation (double-tap Right Command)
 - **Claude Code hooks** for real-time status updates
+- **Multi-app support** - automatically switches button layouts based on focused app
+- **Slack mode** - emoji reaction shortcuts when Slack is focused
+- **Startup animation** - rainbow wave effect on device connect
+- **Auto-reconnect** - gracefully handles device disconnect/reconnect
 
 ## Requirements
 
@@ -95,7 +98,7 @@ cargo run -- --install-hooks
 
 | Encoder         | Rotate                          | Press                                           |
 |-----------------|---------------------------------|-------------------------------------------------|
-| **0** (Scroll)  | Page Up/Down                    | Re-run last command                             |
+| **0** (Scroll)  | Page Up/Down                    | Replay startup animation                        |
 | **1** (Model)   | Cycle through opus/sonnet/haiku | Confirm model selection (sends `/model {name}`) |
 | **2** (History) | Navigate history (Up/Down)      | Select option (Enter)                           |
 | **3**           | -                               | Jump to bottom (End)                            |
@@ -108,6 +111,30 @@ The LCD strip shows 4 status panels:
 2. **MODEL** - Current model (OPUS/SONNET/HAIKU) with selection UI
 3. **TASK** - Current task name from Claude Code hooks
 4. **MIC** - Dictation status (READY/REC)
+
+## Multi-App Support
+
+The deck automatically detects which application is focused and switches button layouts accordingly.
+
+### Slack Mode
+
+When Slack is the focused application, buttons switch to emoji reaction shortcuts:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│    [👍]      [👎]      [✅]      [👀]      [🎉]    Top Row  │
+│    :+1:     :-1:    :check:   :eyes:   :tada:              │
+│                                                             │
+│    [❤️]      [😂]      [🔥]      [💯]      [🙏]  Bottom Row │
+│   :heart:   :joy:    :fire:    :100:   :pray:              │
+└─────────────────────────────────────────────────────────────┘
+```
+
+Pressing a button types the corresponding Slack emoji shortcode (e.g., `:+1:`).
+
+### Claude Mode (Default)
+
+When any other application is focused (Terminal, VS Code, etc.), the standard Claude Code button layout is used.
 
 ## Configuration
 
@@ -172,7 +199,7 @@ Claude Code uses different prompt types:
 claude-deck/
 ├── src/
 │   ├── main.rs          # CLI entry point
-│   ├── lib.rs           # Main app logic
+│   ├── lib.rs           # Main app logic, startup animation
 │   ├── config.rs        # Configuration handling
 │   ├── device/          # HID device communication
 │   │   ├── manager.rs   # Device connection & I/O
@@ -187,11 +214,16 @@ claude-deck/
 │   │   └── keystrokes.rs# Keystroke injection
 │   ├── state/           # Application state
 │   │   └── manager.rs   # State management
-│   └── hooks/           # Claude Code integration
-│       ├── listener.rs  # Hook event listener
-│       └── status.rs    # Status file parsing
+│   ├── hooks/           # Claude Code integration
+│   │   ├── listener.rs  # Hook event listener
+│   │   └── status.rs    # Status file parsing
+│   ├── profiles/        # App-specific button profiles
+│   │   └── mod.rs       # Claude & Slack button configs
+│   └── system/          # OS integration
+│       └── mod.rs       # Focused app detection (macOS)
 ├── assets/
-│   └── fonts/           # Embedded fonts
+│   ├── fonts/           # Embedded fonts
+│   └── emoji/           # Emoji images for Slack mode
 ├── hooks/
 │   └── claude-deck-hook.sh  # Claude Code hook script
 └── Cargo.toml

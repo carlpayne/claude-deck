@@ -44,6 +44,11 @@ pub struct AppState {
     /// Button that was just activated (for visual feedback), with timestamp
     #[serde(skip)]
     pub button_flash: Option<(u8, Instant)>,
+    /// Currently focused application name (e.g., "Slack", "Terminal", "Code")
+    pub focused_app: String,
+    /// Flag to trigger intro animation replay
+    #[serde(skip)]
+    pub play_intro: bool,
 }
 
 impl Default for AppState {
@@ -66,6 +71,8 @@ impl AppState {
             connected: false,
             dictation_active: false,
             button_flash: None,
+            focused_app: String::new(),
+            play_intro: false,
         }
     }
 

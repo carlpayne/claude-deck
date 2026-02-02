@@ -3,7 +3,9 @@ pub mod device;
 pub mod display;
 pub mod hooks;
 pub mod input;
+pub mod profiles;
 pub mod state;
+pub mod system;
 
 use anyhow::Result;
 use std::sync::Arc;
@@ -88,6 +90,9 @@ impl App {
         device.set_brightness(100).await.ok();
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
+        // Play startup animation
+        self.play_startup_animation().await?;
+
         // Get state for rendering
         let state = self.state.read().await;
 
@@ -129,6 +134,84 @@ impl App {
         Ok(())
     }
 
+    /// Play a startup animation on the device
+    async fn play_startup_animation(&self) -> Result<()> {
+        let device = match self.device.as_ref() {
+            Some(d) => d,
+            None => return Ok(()),
+        };
+
+        info!("Playing startup animation...");
+
+        // Animation colors - rainbow wave
+        let colors: [(u8, u8, u8); 6] = [
+            (255, 50, 50),  // Red
+            (255, 150, 50), // Orange
+            (255, 255, 50), // Yellow
+            (50, 255, 100), // Green
+            (50, 150, 255), // Blue
+            (150, 50, 255), // Purple
+        ];
+
+        // Wave animation: light up buttons in sequence
+        // Button order for wave effect (left to right, top then bottom):
+        // Top row: 0, 1, 2, 3, 4 (display keys 10-14)
+        // Bottom row: 5, 6, 7, 8, 9 (display keys 5-9)
+        let wave_order: [u8; 10] = [0, 5, 1, 6, 2, 7, 3, 8, 4, 9];
+
+        // Phase 1: Wave sweep with rainbow colors
+        for (i, &button_id) in wave_order.iter().enumerate() {
+            let color_idx = i % colors.len();
+            let (r, g, b) = colors[color_idx];
+
+            let display_key = if button_id < 5 {
+                button_id + 10
+            } else {
+                button_id
+            };
+
+            let image = self.display.render_solid_button(r, g, b)?;
+            device.set_button_image(display_key, &image).await?;
+            device.flush().await?;
+            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+        }
+
+        // Brief pause at full rainbow
+        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+        // Phase 2: Flash all buttons bright white
+        for button_id in 0..10u8 {
+            let display_key = if button_id < 5 {
+                button_id + 10
+            } else {
+                button_id
+            };
+            let image = self.display.render_solid_button(255, 255, 255)?;
+            device.set_button_image(display_key, &image).await?;
+        }
+        device.flush().await?;
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+
+        // Phase 3: Fade to dark
+        for brightness in (0..=10).rev() {
+            let level = brightness * 25;
+            for button_id in 0..10u8 {
+                let display_key = if button_id < 5 {
+                    button_id + 10
+                } else {
+                    button_id
+                };
+                let image = self.display.render_solid_button(level, level, level)?;
+                device.set_button_image(display_key, &image).await?;
+            }
+            device.flush().await?;
+            tokio::time::sleep(tokio::time::Duration::from_millis(30)).await;
+        }
+
+        info!("Startup animation complete");
+        Ok(())
+    }
+
     /// Run the main loop - handle device events and inject keystrokes
     async fn run_main_loop(&mut self) -> Result<()> {
         info!("Running - keystrokes will be sent to focused window");
@@ -138,6 +221,9 @@ impl App {
 
         let mut last_status_check = std::time::Instant::now();
         let status_check_interval = std::time::Duration::from_millis(500);
+
+        let mut last_app_check = std::time::Instant::now();
+        let app_check_interval = std::time::Duration::from_millis(500);
 
         loop {
             // Handle device events
@@ -150,7 +236,20 @@ impl App {
                     last_keepalive = std::time::Instant::now();
                 }
 
-                device.poll_event().await?
+                match device.poll_event().await {
+                    Ok(event) => event,
+                    Err(e) => {
+                        // Check if device disconnected
+                        let error_str = format!("{}", e);
+                        if error_str.contains("disconnected") || error_str.contains("Disconnected")
+                        {
+                            warn!("Device disconnected, will try to reconnect...");
+                            self.device = None;
+                            self.state.write().await.connected = false;
+                        }
+                        None
+                    }
+                }
             } else {
                 None
             };
@@ -158,6 +257,18 @@ impl App {
             if let Some(event) = event {
                 self.input.handle_event(event).await?;
                 self.update_display().await?;
+
+                // Check if intro animation was requested
+                let play_intro = {
+                    let mut state = self.state.write().await;
+                    let flag = state.play_intro;
+                    state.play_intro = false;
+                    flag
+                };
+                if play_intro {
+                    self.play_startup_animation().await?;
+                    self.redraw_all_buttons().await?;
+                }
             } else if self.device.is_none() {
                 // Try to reconnect periodically
                 tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
@@ -179,6 +290,21 @@ impl App {
                 last_status_check = std::time::Instant::now();
                 if self.update_from_claude_status().await? {
                     self.update_display().await?;
+                }
+            }
+
+            // Poll focused app and redraw buttons on app change
+            if last_app_check.elapsed() >= app_check_interval {
+                last_app_check = std::time::Instant::now();
+                match self.update_focused_app().await {
+                    Ok(true) => {
+                        info!("Redrawing all buttons for app change");
+                        self.redraw_all_buttons().await?;
+                    }
+                    Ok(false) => {}
+                    Err(e) => {
+                        warn!("Error checking focused app: {}", e);
+                    }
                 }
             }
 
@@ -211,6 +337,49 @@ impl App {
 
         device.flush().await?;
 
+        Ok(())
+    }
+
+    /// Update focused app from system
+    /// Returns true if app changed (requiring button redraw)
+    async fn update_focused_app(&self) -> Result<bool> {
+        match system::get_focused_app().await {
+            Some(app) => {
+                let mut state = self.state.write().await;
+                if state.focused_app != app {
+                    info!("Focused app changed: '{}' -> '{}'", state.focused_app, app);
+                    state.focused_app = app;
+                    return Ok(true);
+                }
+            }
+            None => {
+                warn!("Failed to get focused app");
+            }
+        }
+        Ok(false)
+    }
+
+    /// Redraw all buttons (called when app profile changes)
+    async fn redraw_all_buttons(&self) -> Result<()> {
+        let device = match self.device.as_ref() {
+            Some(d) => d,
+            None => return Ok(()),
+        };
+
+        let state = self.state.read().await;
+
+        // Render all buttons with current profile
+        for button_id in 0..10u8 {
+            let display_key = if button_id < 5 {
+                button_id + 10 // 0-4 → 10-14 (top row)
+            } else {
+                button_id // 5-9 → 5-9 (bottom row)
+            };
+            let image = self.display.render_button(button_id, false, &state)?;
+            device.set_button_image(display_key, &image).await?;
+        }
+
+        device.flush().await?;
         Ok(())
     }
 

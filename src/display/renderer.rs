@@ -6,9 +6,10 @@ use tracing::debug;
 
 use crate::config::Config;
 use crate::device::BUTTON_LABELS;
+use crate::profiles::{get_profile_for_app, AppProfile};
 use crate::state::AppState;
 
-use super::buttons::render_button_image;
+use super::buttons::{render_button_image, render_button_with_config};
 use super::strip::render_strip_image;
 
 /// Color constants
@@ -71,14 +72,43 @@ impl DisplayRenderer {
 
     /// Render a button image
     pub fn render_button(&self, button_id: u8, active: bool, state: &AppState) -> Result<RgbImage> {
-        let label = BUTTON_LABELS.get(button_id as usize).unwrap_or(&"?");
+        // Get the current app profile
+        let profile = get_profile_for_app(&state.focused_app);
 
-        // MIC button (7) uses special icon rendering
-        if button_id == 7 {
-            super::buttons::render_mic_button(&self.font, active, state.dictation_active, button_id)
-        } else {
-            render_button_image(&self.font, label, active, button_id)
+        match profile {
+            AppProfile::Slack => {
+                // Use profile-specific button configuration
+                let config = profile.button_config(button_id);
+                render_button_with_config(&self.font, &config, active)
+            }
+            AppProfile::Claude => {
+                // Use default Claude mode rendering
+                let label = BUTTON_LABELS.get(button_id as usize).unwrap_or(&"?");
+
+                // MIC button (7) uses special icon rendering
+                if button_id == 7 {
+                    super::buttons::render_mic_button(
+                        &self.font,
+                        active,
+                        state.dictation_active,
+                        button_id,
+                    )
+                } else {
+                    render_button_image(&self.font, label, active, button_id)
+                }
+            }
         }
+    }
+
+    /// Render a solid colored button (for animations)
+    pub fn render_solid_button(&self, r: u8, g: u8, b: u8) -> Result<RgbImage> {
+        use crate::device::{BUTTON_HEIGHT, BUTTON_WIDTH};
+        let mut img = RgbImage::new(BUTTON_WIDTH, BUTTON_HEIGHT);
+        let color = Rgb([r, g, b]);
+        for pixel in img.pixels_mut() {
+            *pixel = color;
+        }
+        Ok(img)
     }
 
     /// Render the LCD strip with current state (legacy - not used for N4)

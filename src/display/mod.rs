@@ -1,5 +1,5 @@
 mod buttons;
-mod renderer;
+pub mod renderer;
 mod strip;
 
 pub use buttons::*;

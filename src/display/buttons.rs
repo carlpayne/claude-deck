@@ -4,6 +4,7 @@ use rusttype::Font;
 
 use super::renderer::{button_colors, draw_text, text_width, WHITE};
 use crate::device::{BUTTON_HEIGHT, BUTTON_WIDTH};
+use crate::profiles::ButtonConfig;
 
 /// Render a colored button with gradient effect
 pub fn render_button_image(
@@ -190,6 +191,65 @@ fn brighten(color: Rgb<u8>, factor: f32) -> Rgb<u8> {
     ])
 }
 
+/// Render a button with profile-specific configuration
+pub fn render_button_with_config(
+    _font: &Font,
+    config: &ButtonConfig,
+    active: bool,
+) -> Result<RgbImage> {
+    let mut img = RgbImage::new(BUTTON_WIDTH, BUTTON_HEIGHT);
+
+    let (base_color, bright_color) = config.colors;
+
+    // Fill with gradient background
+    if active {
+        fill_gradient(&mut img, bright_color, base_color);
+    } else {
+        fill_gradient(&mut img, darken(base_color, 0.4), darken(base_color, 0.6));
+    }
+
+    // Draw colored border (thicker on top for 3D effect)
+    let border_color = if active { bright_color } else { base_color };
+    draw_styled_border(&mut img, border_color, active);
+
+    // If there's an emoji image, render it
+    if let Some(emoji_name) = config.emoji_image {
+        if let Some(emoji_img) = load_emoji_image(emoji_name) {
+            // Center the emoji on the button
+            let emoji_size = 56u32; // Target size for emoji
+            let resized = image::imageops::resize(
+                &emoji_img,
+                emoji_size,
+                emoji_size,
+                image::imageops::FilterType::Lanczos3,
+            );
+
+            let x_offset = (BUTTON_WIDTH - emoji_size) / 2;
+            let y_offset = (BUTTON_HEIGHT - emoji_size) / 2;
+
+            // Overlay the emoji onto the button
+            for (x, y, pixel) in resized.enumerate_pixels() {
+                let dest_x = x + x_offset;
+                let dest_y = y + y_offset;
+                if dest_x < BUTTON_WIDTH && dest_y < BUTTON_HEIGHT {
+                    // Check if pixel is not fully transparent (assuming RGBA)
+                    if pixel[3] > 128 {
+                        img.put_pixel(dest_x, dest_y, Rgb([pixel[0], pixel[1], pixel[2]]));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(img)
+}
+
+/// Load an emoji image from assets
+fn load_emoji_image(name: &str) -> Option<image::RgbaImage> {
+    let path = format!("assets/emoji/{}.png", name);
+    image::open(&path).ok().map(|img| img.to_rgba8())
+}
+
 /// Render a MIC button with microphone icon
 pub fn render_mic_button(
     font: &Font,
@@ -351,7 +411,7 @@ mod tests {
         let font_data = include_bytes!("../../assets/fonts/JetBrainsMono-Bold.ttf");
         let font = Font::try_from_bytes(font_data as &[u8]).unwrap();
 
-        let img = render_button_image(&font, "TEST", false).unwrap();
+        let img = render_button_image(&font, "TEST", false, 0).unwrap();
         assert_eq!(img.width(), BUTTON_WIDTH);
         assert_eq!(img.height(), BUTTON_HEIGHT);
     }

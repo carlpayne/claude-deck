@@ -405,6 +405,12 @@ impl DeviceManager {
                 }
             }
             Err(e) => {
+                // Check if this is a disconnect error
+                let error_str = format!("{}", e);
+                if error_str.contains("Disconnected") {
+                    warn!("Device disconnected");
+                    return Err(anyhow!("Device disconnected"));
+                }
                 warn!("Error reading device input: {}", e);
                 Ok(None)
             }

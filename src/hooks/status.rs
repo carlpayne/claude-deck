@@ -108,11 +108,10 @@ mod tests {
     fn test_status_serialization() {
         let status = ClaudeStatus {
             task: "Writing code".to_string(),
+            tool_detail: None,
             waiting_for_input: true,
             input_type: Some("permission".to_string()),
             model: Some("opus".to_string()),
-            cost: 0.05,
-            tokens: 1500,
             processing: false,
             error: None,
             timestamp: 1234567890,

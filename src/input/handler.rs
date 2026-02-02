@@ -6,6 +6,7 @@ use tokio::sync::RwLock;
 use tracing::{debug, info};
 
 use crate::device::InputEvent;
+use crate::profiles::{get_profile_for_app, AppProfile, ButtonAction};
 use crate::state::AppState;
 
 use super::keystrokes::{Key, KeystrokeSender};
@@ -139,6 +140,45 @@ impl InputHandler {
             button, press_duration, is_long_press
         );
 
+        // Get the current app profile
+        let profile = {
+            let state = self.state.read().await;
+            get_profile_for_app(&state.focused_app)
+        };
+
+        // Route to profile-specific handler
+        match profile {
+            AppProfile::Slack => self.handle_slack_button(button).await,
+            AppProfile::Claude => self.handle_claude_button(button, is_long_press).await?,
+        }
+
+        Ok(())
+    }
+
+    /// Handle button press in Slack mode (emoji shortcuts)
+    async fn handle_slack_button(&mut self, button: u8) {
+        let profile = AppProfile::Slack;
+        let config = profile.button_config(button);
+
+        match config.action {
+            ButtonAction::SlackEmoji(emoji) => {
+                info!("Slack emoji: {} -> {}", config.label, emoji);
+                self.send_text(&emoji);
+            }
+            ButtonAction::Text(text) => {
+                self.send_text(&text);
+            }
+            ButtonAction::Key(key) => {
+                self.send_key(key);
+            }
+            ButtonAction::Custom(_) => {
+                // Fallback to Claude handling if custom
+            }
+        }
+    }
+
+    /// Handle button press in Claude mode (default behavior)
+    async fn handle_claude_button(&mut self, button: u8, is_long_press: bool) -> Result<()> {
         match (button, is_long_press) {
             // Top row - immediate actions
             (0, _) => self.send_accept().await?,
@@ -181,10 +221,9 @@ impl InputHandler {
 
         match encoder {
             0 => {
-                // Re-run last command
-                self.send_key(Key::Up);
-                std::thread::sleep(Duration::from_millis(50));
-                self.send_key(Key::Enter);
+                // Replay intro animation
+                info!("Encoder 0 press: triggering intro animation");
+                self.state.write().await.play_intro = true;
             }
             1 => {
                 // Confirm model selection
