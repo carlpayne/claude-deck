@@ -177,12 +177,6 @@ impl DeviceManager {
         Ok(())
     }
 
-    /// Legacy method - now a no-op since we use individual strip buttons
-    pub async fn set_strip_image(&self, _image: &RgbImage) -> Result<()> {
-        // The N4 uses 4 individual strip buttons instead of one large strip
-        Ok(())
-    }
-
     /// Flush pending image updates to the device
     pub async fn flush(&self) -> Result<()> {
         self.device
@@ -415,21 +409,6 @@ impl DeviceManager {
                 Ok(None)
             }
         }
-    }
-
-    /// Reset all displays to blank
-    pub async fn clear_display(&mut self) -> Result<()> {
-        debug!("Clearing display");
-
-        // Create black images
-        let button_img = RgbImage::new(BUTTON_WIDTH, BUTTON_HEIGHT);
-
-        for i in 0..BUTTON_COUNT {
-            self.set_button_image(i, &button_img).await?;
-        }
-
-        self.flush().await?;
-        Ok(())
     }
 
     /// Disconnect from device gracefully

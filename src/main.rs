@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 use tokio::signal;
 use tracing::info;
@@ -16,21 +16,32 @@ struct Cli {
     status: bool,
 
     /// Set device brightness (0-100)
-    #[arg(long, value_name = "PERCENT")]
+    #[arg(long, value_name = "PERCENT", value_parser = clap::value_parser!(u8).range(0..=100))]
     brightness: Option<u8>,
 
     /// Install autostart on login (macOS LaunchAgent)
     #[arg(long)]
     install_autostart: bool,
 
+    /// Uninstall autostart (remove LaunchAgent)
+    #[arg(long)]
+    uninstall_autostart: bool,
+
     /// Install Claude Code hooks for status integration
     #[arg(long)]
     install_hooks: bool,
+
+    /// Uninstall Claude Code hooks
+    #[arg(long)]
+    uninstall_hooks: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Set up SIGCHLD handler to auto-reap child processes (prevents zombies)
+    // SAFETY: Setting SIGCHLD to SIG_IGN is async-signal-safe and prevents zombie
+    // processes when spawning child commands (e.g., osascript for voice dictation).
+    // We only ignore the signal rather than installing a custom handler, which is
+    // the safest use of signal(). This is a well-established Unix pattern.
     #[cfg(unix)]
     unsafe {
         libc::signal(libc::SIGCHLD, libc::SIG_IGN);
@@ -49,8 +60,16 @@ async fn main() -> Result<()> {
         return install_autostart();
     }
 
+    if cli.uninstall_autostart {
+        return uninstall_autostart();
+    }
+
     if cli.install_hooks {
         return install_hooks();
+    }
+
+    if cli.uninstall_hooks {
+        return uninstall_hooks();
     }
 
     if cli.status {
@@ -97,12 +116,12 @@ fn install_autostart() -> Result<()> {
         use std::fs;
         use std::path::PathBuf;
 
-        let home = std::env::var("HOME")?;
+        let home = std::env::var("HOME").context("HOME environment variable not set")?;
         let launch_agents = PathBuf::from(&home).join("Library/LaunchAgents");
-        fs::create_dir_all(&launch_agents)?;
+        fs::create_dir_all(&launch_agents).context("Failed to create LaunchAgents directory")?;
 
         let plist_path = launch_agents.join("com.claude-deck.plist");
-        let binary_path = std::env::current_exe()?;
+        let binary_path = std::env::current_exe().context("Failed to get current executable path")?;
 
         let plist_content = format!(
             r#"<?xml version="1.0" encoding="UTF-8"?>
@@ -130,7 +149,8 @@ fn install_autostart() -> Result<()> {
             home
         );
 
-        fs::write(&plist_path, plist_content)?;
+        fs::write(&plist_path, plist_content)
+            .with_context(|| format!("Failed to write LaunchAgent plist to {:?}", plist_path))?;
         info!("Created LaunchAgent at {:?}", plist_path);
         info!("Run 'launchctl load {:?}' to start now", plist_path);
         Ok(())
@@ -148,35 +168,51 @@ fn install_hooks() -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
     use std::path::PathBuf;
 
-    let home = std::env::var("HOME")?;
+    let home = std::env::var("HOME").context("HOME environment variable not set")?;
 
     // Claude Code hooks directory
     let hooks_dir = PathBuf::from(&home).join(".claude/hooks");
-    fs::create_dir_all(&hooks_dir)?;
+    fs::create_dir_all(&hooks_dir).context("Failed to create hooks directory")?;
 
     // Hook script content (embedded)
     let hook_script = include_str!("../hooks/claude-deck-hook.sh");
     let hook_path = hooks_dir.join("claude-deck-hook.sh");
 
-    fs::write(&hook_path, hook_script)?;
+    fs::write(&hook_path, hook_script)
+        .with_context(|| format!("Failed to write hook script to {:?}", hook_path))?;
 
     // Make executable
-    let mut perms = fs::metadata(&hook_path)?.permissions();
+    let mut perms = fs::metadata(&hook_path)
+        .context("Failed to get hook script metadata")?
+        .permissions();
     perms.set_mode(0o755);
-    fs::set_permissions(&hook_path, perms)?;
+    fs::set_permissions(&hook_path, perms).context("Failed to set hook script permissions")?;
 
     println!("✓ Installed hook script at {:?}", hook_path);
 
     // Update Claude Code settings
     let settings_dir = PathBuf::from(&home).join(".claude");
-    fs::create_dir_all(&settings_dir)?;
+    fs::create_dir_all(&settings_dir).context("Failed to create .claude directory")?;
 
     let settings_path = settings_dir.join("settings.json");
 
     // Read existing settings or create new
     let mut settings: serde_json::Value = if settings_path.exists() {
-        let content = fs::read_to_string(&settings_path)?;
-        serde_json::from_str(&content).unwrap_or(serde_json::json!({}))
+        let content = fs::read_to_string(&settings_path)
+            .with_context(|| format!("Failed to read settings from {:?}", settings_path))?;
+        match serde_json::from_str(&content) {
+            Ok(json) => json,
+            Err(e) => {
+                eprintln!(
+                    "⚠ Warning: Could not parse existing settings.json: {}",
+                    e
+                );
+                eprintln!("  Creating backup at settings.json.bak and starting fresh");
+                let backup_path = settings_dir.join("settings.json.bak");
+                fs::copy(&settings_path, &backup_path).ok();
+                serde_json::json!({})
+            }
+        }
     } else {
         serde_json::json!({})
     };
@@ -197,7 +233,7 @@ fn install_hooks() -> Result<()> {
         let hooks = obj.entry("hooks").or_insert(serde_json::json!({}));
         if let Some(hooks_obj) = hooks.as_object_mut() {
             // Add our hook to each event type
-            for event in &["PreToolUse", "PostToolUse", "Notification", "Stop"] {
+            for event in &["UserPromptSubmit", "PreToolUse", "PostToolUse", "Notification", "Stop"] {
                 let event_hooks = hooks_obj.entry(*event).or_insert(serde_json::json!([]));
                 if let Some(arr) = event_hooks.as_array_mut() {
                     // Check if our hook is already there
@@ -223,8 +259,10 @@ fn install_hooks() -> Result<()> {
     }
 
     // Write settings back
-    let settings_content = serde_json::to_string_pretty(&settings)?;
-    fs::write(&settings_path, settings_content)?;
+    let settings_content = serde_json::to_string_pretty(&settings)
+        .context("Failed to serialize settings to JSON")?;
+    fs::write(&settings_path, settings_content)
+        .with_context(|| format!("Failed to write settings to {:?}", settings_path))?;
 
     println!("✓ Updated Claude Code settings at {:?}", settings_path);
     println!();
@@ -258,11 +296,107 @@ async fn check_status() -> Result<()> {
 async fn set_brightness(brightness: u8) -> Result<()> {
     use claude_deck::device::DeviceManager;
 
-    let brightness = brightness.min(100);
+    // Note: brightness is already validated by clap to be 0-100
     info!("Setting brightness to {}%", brightness);
 
     let manager = DeviceManager::connect().await?;
     manager.set_brightness(brightness).await?;
     println!("✓ Brightness set to {}%", brightness);
+    Ok(())
+}
+
+fn uninstall_autostart() -> Result<()> {
+    #[cfg(target_os = "macos")]
+    {
+        use std::fs;
+        use std::path::PathBuf;
+
+        let home = std::env::var("HOME").context("HOME environment variable not set")?;
+        let plist_path = PathBuf::from(&home).join("Library/LaunchAgents/com.claude-deck.plist");
+
+        if plist_path.exists() {
+            // Try to unload first (ignore errors if not loaded)
+            let _ = std::process::Command::new("launchctl")
+                .arg("unload")
+                .arg(&plist_path)
+                .output();
+
+            fs::remove_file(&plist_path)
+                .with_context(|| format!("Failed to remove {:?}", plist_path))?;
+            println!("✓ Removed LaunchAgent at {:?}", plist_path);
+        } else {
+            println!("LaunchAgent not found (already uninstalled?)");
+        }
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        eprintln!("Autostart uninstallation is only supported on macOS");
+        Ok(())
+    }
+}
+
+fn uninstall_hooks() -> Result<()> {
+    use std::fs;
+    use std::path::PathBuf;
+
+    let home = std::env::var("HOME").context("HOME environment variable not set")?;
+
+    // Remove hook script
+    let hook_path = PathBuf::from(&home).join(".claude/hooks/claude-deck-hook.sh");
+    if hook_path.exists() {
+        fs::remove_file(&hook_path)
+            .with_context(|| format!("Failed to remove hook script at {:?}", hook_path))?;
+        println!("✓ Removed hook script at {:?}", hook_path);
+    }
+
+    // Remove hooks from settings
+    let settings_path = PathBuf::from(&home).join(".claude/settings.json");
+    if settings_path.exists() {
+        let content = fs::read_to_string(&settings_path)
+            .with_context(|| format!("Failed to read settings from {:?}", settings_path))?;
+
+        if let Ok(mut settings) = serde_json::from_str::<serde_json::Value>(&content) {
+            let mut modified = false;
+
+            if let Some(hooks) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) {
+                for event in &["UserPromptSubmit", "PreToolUse", "PostToolUse", "Notification", "Stop"] {
+                    if let Some(event_hooks) = hooks.get_mut(*event).and_then(|e| e.as_array_mut()) {
+                        let original_len = event_hooks.len();
+                        event_hooks.retain(|v| {
+                            !v.get("hooks")
+                                .and_then(|h| h.as_array())
+                                .map(|hooks_arr| {
+                                    hooks_arr.iter().any(|hook| {
+                                        hook.get("command")
+                                            .and_then(|c| c.as_str())
+                                            .map(|s| s.contains("claude-deck"))
+                                            .unwrap_or(false)
+                                    })
+                                })
+                                .unwrap_or(false)
+                        });
+                        if event_hooks.len() != original_len {
+                            modified = true;
+                        }
+                    }
+                }
+            }
+
+            if modified {
+                let settings_content = serde_json::to_string_pretty(&settings)
+                    .context("Failed to serialize settings")?;
+                fs::write(&settings_path, settings_content)
+                    .with_context(|| format!("Failed to write settings to {:?}", settings_path))?;
+                println!("✓ Removed claude-deck hooks from settings");
+            }
+        }
+    }
+
+    println!();
+    println!("Claude Code hooks uninstalled successfully!");
+    println!("Note: You may need to restart Claude Code for changes to take effect.");
+
     Ok(())
 }

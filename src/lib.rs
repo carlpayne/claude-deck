@@ -13,7 +13,7 @@ use tokio::sync::RwLock;
 use tracing::{error, info, warn};
 
 use config::Config;
-use device::DeviceManager;
+use device::{button_to_display_key, DeviceManager};
 use display::DisplayRenderer;
 use input::InputHandler;
 use state::AppState;
@@ -31,9 +31,15 @@ pub struct App {
 impl App {
     /// Create a new application instance
     pub async fn new(config: Config) -> Result<Self> {
-        let state = Arc::new(RwLock::new(AppState::new()));
+        let state = Arc::new(RwLock::new(AppState::with_config(
+            config.models.available.clone(),
+            &config.models.default,
+            config.new_session.terminal.clone(),
+            config.device.brightness,
+        )));
 
         // Try to connect to device
+        let brightness = state.read().await.brightness;
         let device = match DeviceManager::connect().await {
             Ok(d) => {
                 info!("Connected to device");
@@ -42,7 +48,7 @@ impl App {
                 if let Err(e) = d.keep_alive().await {
                     warn!("Keep-alive failed: {}", e);
                 }
-                if let Err(e) = d.set_brightness(100).await {
+                if let Err(e) = d.set_brightness(brightness).await {
                     warn!("Set brightness failed: {}", e);
                 }
 
@@ -86,8 +92,9 @@ impl App {
         device.reset().await.ok();
         tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
 
-        info!("Waking up device...");
-        device.set_brightness(100).await.ok();
+        let brightness = self.state.read().await.brightness;
+        info!("Waking up device with brightness {}%...", brightness);
+        device.set_brightness(brightness).await.ok();
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
 
         // Play startup animation
@@ -97,18 +104,8 @@ impl App {
         let state = self.state.read().await;
 
         // Render all buttons
-        // N4 display mapping:
-        // - Top row (row 0): display keys 10-14
-        // - Bottom row (row 1): display keys 5-9
-        // Our button layout:
-        // - Buttons 0-4 (ACCEPT, REJECT, STOP, RETRY, REWIND) → top row → display keys 10-14
-        // - Buttons 5-9 (YES ALL, TAB, MIC, ENTER, YOLO) → bottom row → display keys 5-9
         for button_id in 0..10u8 {
-            let display_key = if button_id < 5 {
-                button_id + 10 // 0-4 → 10-14 (top row)
-            } else {
-                button_id // 5-9 → 5-9 (bottom row)
-            };
+            let display_key = button_to_display_key(button_id);
             let image = self.display.render_button(button_id, false, &state)?;
             device.set_button_image(display_key, &image).await?;
         }
@@ -164,11 +161,7 @@ impl App {
             let color_idx = i % colors.len();
             let (r, g, b) = colors[color_idx];
 
-            let display_key = if button_id < 5 {
-                button_id + 10
-            } else {
-                button_id
-            };
+            let display_key = button_to_display_key(button_id);
 
             let image = self.display.render_solid_button(r, g, b)?;
             device.set_button_image(display_key, &image).await?;
@@ -181,11 +174,7 @@ impl App {
 
         // Phase 2: Flash all buttons bright white
         for button_id in 0..10u8 {
-            let display_key = if button_id < 5 {
-                button_id + 10
-            } else {
-                button_id
-            };
+            let display_key = button_to_display_key(button_id);
             let image = self.display.render_solid_button(255, 255, 255)?;
             device.set_button_image(display_key, &image).await?;
         }
@@ -196,11 +185,7 @@ impl App {
         for brightness in (0..=10).rev() {
             let level = brightness * 25;
             for button_id in 0..10u8 {
-                let display_key = if button_id < 5 {
-                    button_id + 10
-                } else {
-                    button_id
-                };
+                let display_key = button_to_display_key(button_id);
                 let image = self.display.render_solid_button(level, level, level)?;
                 device.set_button_image(display_key, &image).await?;
             }
@@ -370,11 +355,7 @@ impl App {
 
         // Render all buttons with current profile
         for button_id in 0..10u8 {
-            let display_key = if button_id < 5 {
-                button_id + 10 // 0-4 → 10-14 (top row)
-            } else {
-                button_id // 5-9 → 5-9 (bottom row)
-            };
+            let display_key = button_to_display_key(button_id);
             let image = self.display.render_button(button_id, false, &state)?;
             device.set_button_image(display_key, &image).await?;
         }

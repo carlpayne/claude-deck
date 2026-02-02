@@ -7,7 +7,7 @@ use super::renderer::{
     ORANGE, RED, WHITE,
 };
 use crate::device::{STRIP_BUTTON_HEIGHT, STRIP_BUTTON_WIDTH, STRIP_HEIGHT, STRIP_WIDTH};
-use crate::state::{AppState, MODELS};
+use crate::state::AppState;
 
 /// Strip button labels
 pub const STRIP_BUTTON_LABELS: [&str; 4] = [
@@ -285,7 +285,7 @@ fn draw_model_selector(img: &mut RgbImage, font: &Font, state: &AppState, y: i32
     let mut x = 10;
     let scale = 14.0;
 
-    for (i, model) in MODELS.iter().enumerate() {
+    for (i, model) in state.available_models.iter().enumerate() {
         let is_selected = i == state.model_index;
         let prefix = if is_selected { "●" } else { "○" };
         let color = if is_selected { GREEN } else { GRAY };

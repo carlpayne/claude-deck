@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
@@ -19,8 +19,10 @@ impl Config {
         let config_path = Self::config_path()?;
 
         if config_path.exists() {
-            let contents = std::fs::read_to_string(&config_path)?;
-            let config: Config = toml::from_str(&contents)?;
+            let contents = std::fs::read_to_string(&config_path)
+                .with_context(|| format!("Failed to read config file at {:?}", config_path))?;
+            let config: Config = toml::from_str(&contents)
+                .with_context(|| format!("Failed to parse config file at {:?}", config_path))?;
             Ok(config)
         } else {
             // Create default config
@@ -35,23 +37,25 @@ impl Config {
         let config_path = Self::config_path()?;
 
         if let Some(parent) = config_path.parent() {
-            std::fs::create_dir_all(parent)?;
+            std::fs::create_dir_all(parent)
+                .with_context(|| format!("Failed to create config directory at {:?}", parent))?;
         }
 
-        let contents = toml::to_string_pretty(self)?;
-        std::fs::write(&config_path, contents)?;
+        let contents = toml::to_string_pretty(self).context("Failed to serialize config")?;
+        std::fs::write(&config_path, contents)
+            .with_context(|| format!("Failed to write config file at {:?}", config_path))?;
         Ok(())
     }
 
     /// Get config file path
     pub fn config_path() -> Result<PathBuf> {
-        let home = std::env::var("HOME")?;
+        let home = std::env::var("HOME").context("HOME environment variable not set")?;
         Ok(PathBuf::from(home).join(".config/claude-deck/config.toml"))
     }
 
     /// Get state file path (for hooks communication)
     pub fn state_path() -> Result<PathBuf> {
-        let home = std::env::var("HOME")?;
+        let home = std::env::var("HOME").context("HOME environment variable not set")?;
         Ok(PathBuf::from(home).join(".claude-deck/state.json"))
     }
 }

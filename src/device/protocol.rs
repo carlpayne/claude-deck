@@ -45,3 +45,17 @@ pub const PRODUCT_ID: u16 = 0x3004;
 
 /// Long press threshold in milliseconds
 pub const LONG_PRESS_MS: u64 = 2000;
+
+/// Convert logical button ID (0-9) to device display key
+///
+/// The N4 display mapping is:
+/// - Top row (buttons 0-4) → display keys 10-14
+/// - Bottom row (buttons 5-9) → display keys 5-9
+#[inline]
+pub fn button_to_display_key(button_id: u8) -> u8 {
+    if button_id < 5 {
+        button_id + 10 // 0-4 → 10-14 (top row)
+    } else {
+        button_id // 5-9 → 5-9 (bottom row)
+    }
+}

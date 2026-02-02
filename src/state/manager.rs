@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::time::Instant;
 
-/// Available models for the model selector
-pub const MODELS: &[&str] = &["opus", "sonnet", "haiku"];
+/// Default models for the model selector (used if config not provided)
+pub const DEFAULT_MODELS: &[&str] = &["opus", "sonnet", "haiku"];
 
 /// Type of input the system is waiting for
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -25,7 +25,7 @@ pub struct AppState {
     pub tool_detail: Option<String>,
     /// Current model name
     pub model: String,
-    /// Index in MODELS array
+    /// Index in available_models array
     pub model_index: usize,
     /// True when encoder is being rotated for model selection
     pub model_selecting: bool,
@@ -49,6 +49,17 @@ pub struct AppState {
     /// Flag to trigger intro animation replay
     #[serde(skip)]
     pub play_intro: bool,
+
+    // Configuration
+    /// Available models (from config)
+    #[serde(skip)]
+    pub available_models: Vec<String>,
+    /// Terminal app for new sessions (from config)
+    #[serde(skip)]
+    pub terminal_app: String,
+    /// Device brightness (from config)
+    #[serde(skip)]
+    pub brightness: u8,
 }
 
 impl Default for AppState {
@@ -59,10 +70,13 @@ impl Default for AppState {
 
 impl AppState {
     pub fn new() -> Self {
+        let default_models: Vec<String> = DEFAULT_MODELS.iter().map(|s| s.to_string()).collect();
+        let default_model = default_models.first().cloned().unwrap_or_else(|| "opus".to_string());
+
         Self {
             task_name: "READY".to_string(),
             tool_detail: None,
-            model: "opus".to_string(),
+            model: default_model,
             model_index: 0,
             model_selecting: false,
             waiting_for_input: false,
@@ -73,6 +87,45 @@ impl AppState {
             button_flash: None,
             focused_app: String::new(),
             play_intro: false,
+            available_models: default_models,
+            terminal_app: "Terminal".to_string(),
+            brightness: 80,
+        }
+    }
+
+    /// Create state with configuration
+    pub fn with_config(
+        available_models: Vec<String>,
+        default_model: &str,
+        terminal_app: String,
+        brightness: u8,
+    ) -> Self {
+        let model_index = available_models
+            .iter()
+            .position(|m| m == default_model)
+            .unwrap_or(0);
+        let model = available_models
+            .get(model_index)
+            .cloned()
+            .unwrap_or_else(|| "opus".to_string());
+
+        Self {
+            task_name: "READY".to_string(),
+            tool_detail: None,
+            model,
+            model_index,
+            model_selecting: false,
+            waiting_for_input: false,
+            input_type: None,
+            yolo_mode: false,
+            connected: false,
+            dictation_active: false,
+            button_flash: None,
+            focused_app: String::new(),
+            play_intro: false,
+            available_models,
+            terminal_app,
+            brightness,
         }
     }
 
@@ -93,15 +146,20 @@ impl AppState {
 
     /// Cycle through available models
     pub fn cycle_model(&mut self, direction: i8) {
-        self.model_selecting = true;
-
-        if direction > 0 {
-            self.model_index = (self.model_index + 1) % MODELS.len();
-        } else {
-            self.model_index = self.model_index.checked_sub(1).unwrap_or(MODELS.len() - 1);
+        if self.available_models.is_empty() {
+            return;
         }
 
-        self.model = MODELS[self.model_index].to_string();
+        self.model_selecting = true;
+
+        let len = self.available_models.len();
+        if direction > 0 {
+            self.model_index = (self.model_index + 1) % len;
+        } else {
+            self.model_index = self.model_index.checked_sub(1).unwrap_or(len - 1);
+        }
+
+        self.model = self.available_models[self.model_index].clone();
     }
 
     /// Confirm model selection (called when encoder is pressed)
@@ -111,7 +169,7 @@ impl AppState {
 
     /// Set model by name
     pub fn set_model(&mut self, model: &str) {
-        if let Some(index) = MODELS.iter().position(|&m| m == model) {
+        if let Some(index) = self.available_models.iter().position(|m| m == model) {
             self.model_index = index;
             self.model = model.to_string();
         }
@@ -133,6 +191,7 @@ mod tests {
     #[test]
     fn test_cycle_model_forward() {
         let mut state = AppState::new();
+        // Default models are ["opus", "sonnet", "haiku"]
         assert_eq!(state.model, "opus");
         assert_eq!(state.model_index, 0);
 
@@ -172,5 +231,16 @@ mod tests {
 
         state.set_model("invalid");
         assert_eq!(state.model, "sonnet"); // Unchanged
+    }
+
+    #[test]
+    fn test_with_config() {
+        let models = vec!["model-a".to_string(), "model-b".to_string()];
+        let state = AppState::with_config(models, "model-b", "iTerm".to_string(), 75);
+
+        assert_eq!(state.model, "model-b");
+        assert_eq!(state.model_index, 1);
+        assert_eq!(state.terminal_app, "iTerm");
+        assert_eq!(state.brightness, 75);
     }
 }

@@ -86,13 +86,13 @@ cargo run -- --install-hooks
 
 ### Bottom Row
 
-| Button    | Color  | Short Press                         | Long Press (2s)             |
-|-----------|--------|-------------------------------------|-----------------------------|
-| **TRUST** | Green  | Send `2` (select "don't ask again") | -                           |
-| **TAB**   | Blue   | Send Tab                            | Auto-complete               |
-| **MIC**   | Purple | Toggle voice dictation              | Clear current line (Ctrl+U) |
-| **ENTER** | Blue   | Send Enter                          | -                           |
-| **CLEAR** | Gray   | Send `/clear` + Enter               | -                           |
+| Button    | Color  | Short Press                         | Long Press (2s)                    |
+|-----------|--------|-------------------------------------|-------------------------------------|
+| **TRUST** | Green  | Send `2` (select "don't ask again") | -                                   |
+| **TAB**   | Blue   | Send Tab                            | Open new terminal with Claude Code  |
+| **MIC**   | Purple | Toggle voice dictation              | Clear current line (Ctrl+U)         |
+| **ENTER** | Blue   | Send Enter                          | -                                   |
+| **CLEAR** | Gray   | Send `/clear` + Enter               | -                                   |
 
 ## Encoder Actions
 
@@ -141,8 +141,19 @@ When any other application is focused (Terminal, VS Code, etc.), the standard Cl
 Configuration file location: `~/.config/claude-deck/config.toml`
 
 ```toml
-# Example configuration (defaults shown)
-brightness = 100
+# Device settings
+[device]
+brightness = 80        # LCD brightness (0-100)
+idle_timeout = 300     # Seconds before dimming (not yet implemented)
+
+# Terminal for new sessions (long-press TAB)
+[new_session]
+terminal = "Terminal"  # Or "iTerm"
+
+# Available models for the model selector encoder
+[models]
+available = ["opus", "sonnet", "haiku"]
+default = "opus"
 ```
 
 ## CLI Options
@@ -151,12 +162,14 @@ brightness = 100
 claude-deck [OPTIONS]
 
 Options:
-  --status            Check device connection status and exit
-  --brightness <N>    Set device brightness (0-100)
-  --install-autostart Install macOS LaunchAgent for autostart
-  --install-hooks     Install Claude Code hooks for status updates
-  --help              Print help
-  --version           Print version
+  --status              Check device connection status and exit
+  --brightness <N>      Set device brightness (0-100)
+  --install-autostart   Install macOS LaunchAgent for autostart
+  --uninstall-autostart Remove macOS LaunchAgent
+  --install-hooks       Install Claude Code hooks for status updates
+  --uninstall-hooks     Remove Claude Code hooks
+  --help                Print help
+  --version             Print version
 ```
 
 ## Troubleshooting
@@ -215,7 +228,6 @@ claude-deck/
 │   ├── state/           # Application state
 │   │   └── manager.rs   # State management
 │   ├── hooks/           # Claude Code integration
-│   │   ├── listener.rs  # Hook event listener
 │   │   └── status.rs    # Status file parsing
 │   ├── profiles/        # App-specific button profiles
 │   │   └── mod.rs       # Claude & Slack button configs

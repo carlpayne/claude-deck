@@ -1,3 +1,3 @@
 mod manager;
 
-pub use manager::{AppState, InputType, MODELS};
+pub use manager::{AppState, InputType, DEFAULT_MODELS};

@@ -2,8 +2,10 @@ use anyhow::Result;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio::process::Command;
 use tokio::sync::RwLock;
-use tracing::{debug, info};
+use tokio::time::sleep;
+use tracing::{debug, info, warn};
 
 use crate::device::InputEvent;
 use crate::profiles::{get_profile_for_app, AppProfile, ButtonAction};
@@ -31,13 +33,7 @@ pub struct InputHandler {
     keystroke_sender: KeystrokeSender,
     button_press_times: HashMap<u8, Instant>,
     long_press_fired: HashSet<u8>,
-    encoder_state: EncoderState,
     dictation_state: DictationState,
-}
-
-/// Tracks encoder state for model selection timeout
-struct EncoderState {
-    model_selection_start: Option<Instant>,
 }
 
 /// Tracks dictation state
@@ -53,9 +49,6 @@ impl InputHandler {
             keystroke_sender: KeystrokeSender::new(),
             button_press_times: HashMap::new(),
             long_press_fired: HashSet::new(),
-            encoder_state: EncoderState {
-                model_selection_start: None,
-            },
             dictation_state: DictationState {
                 active: false,
                 first_use: true,
@@ -184,8 +177,8 @@ impl InputHandler {
             (0, _) => self.send_accept().await?,
             (1, _) => self.send_reject().await?,
             (2, _) => self.send_stop(),
-            (3, _) => self.send_retry(),
-            (4, _) => self.send_rewind(),
+            (3, _) => self.send_retry().await,
+            (4, _) => self.send_rewind().await,
 
             // Bottom row - with long-press variants
             (5, _) => self.send_trust(),
@@ -275,10 +268,10 @@ impl InputHandler {
         self.send_key(Key::Escape);
     }
 
-    fn send_retry(&mut self) {
+    async fn send_retry(&mut self) {
         info!("RETRY: sending Up + Enter");
         self.send_key(Key::Up);
-        std::thread::sleep(Duration::from_millis(50));
+        sleep(Duration::from_millis(50)).await;
         self.send_key(Key::Enter);
     }
 
@@ -297,10 +290,10 @@ impl InputHandler {
         self.send_key(Key::Tab);
     }
 
-    fn send_rewind(&mut self) {
+    async fn send_rewind(&mut self) {
         info!("REWIND: sending double Escape");
         self.send_key(Key::Escape);
-        std::thread::sleep(Duration::from_millis(100));
+        sleep(Duration::from_millis(100)).await;
         self.send_key(Key::Escape);
     }
 
@@ -323,27 +316,39 @@ impl InputHandler {
 
         #[cfg(target_os = "macos")]
         {
-            let yolo = self.state.read().await.yolo_mode;
+            let state = self.state.read().await;
+            let yolo = state.yolo_mode;
+            let terminal_app = state.terminal_app.clone();
+            drop(state);
+
             let cmd = if yolo {
                 "claude --dangerously-skip-permissions"
             } else {
                 "claude"
             };
 
+            // Escape quotes in terminal app name to prevent AppleScript injection
+            let escaped_terminal = terminal_app.replace('\\', "\\\\").replace('"', "\\\"");
+
             let script = format!(
-                r#"tell application "Terminal"
+                r#"tell application "{}"
                     do script "{}"
                     activate
                 end tell"#,
-                cmd
+                escaped_terminal, cmd
             );
 
-            // Spawn in a thread that waits for completion to prevent zombies
-            std::thread::spawn(move || {
-                let _ = std::process::Command::new("osascript")
+            // Spawn async task that properly awaits completion
+            tokio::spawn(async move {
+                match Command::new("osascript")
                     .arg("-e")
                     .arg(&script)
-                    .output(); // .output() waits for completion
+                    .output()
+                    .await
+                {
+                    Ok(_) => debug!("Terminal session opened successfully"),
+                    Err(e) => warn!("Failed to open terminal session: {}", e),
+                }
             });
         }
     }
@@ -355,7 +360,7 @@ impl InputHandler {
         if self.dictation_state.first_use {
             debug!("First dictation use - warming up enigo");
             self.keystroke_sender.send_dictation_toggle();
-            std::thread::sleep(std::time::Duration::from_millis(200));
+            sleep(Duration::from_millis(200)).await;
             self.dictation_state.first_use = false;
         }
         self.keystroke_sender.send_dictation_toggle();
@@ -389,15 +394,9 @@ impl InputHandler {
         self.send_key(key);
     }
 
-    #[allow(dead_code)]
-    fn reset_zoom(&mut self) {
-        self.keystroke_sender.reset_zoom();
-    }
-
     async fn cycle_model(&mut self, direction: i8) {
         let mut state = self.state.write().await;
         state.cycle_model(direction);
-        self.encoder_state.model_selection_start = Some(Instant::now());
     }
 
     async fn confirm_model(&mut self) {
@@ -411,6 +410,5 @@ impl InputHandler {
         info!("Switching to model: {}", model);
         self.send_text(&format!("/model {}", model));
         self.send_key(Key::Enter);
-        self.encoder_state.model_selection_start = None;
     }
 }
