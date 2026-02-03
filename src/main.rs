@@ -1,10 +1,16 @@
 use anyhow::{Context, Result};
 use clap::Parser;
+use std::sync::{Arc, RwLock as StdRwLock};
 use tokio::signal;
-use tracing::info;
+use tokio::sync::{mpsc, RwLock as TokioRwLock};
+use tracing::{info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
-use claude_deck::{config::Config, App};
+use claude_deck::{
+    config::Config,
+    web::{self, ConfigChangeEvent},
+    App, AppCommand,
+};
 
 #[derive(Parser, Debug)]
 #[command(name = "claude-deck")]
@@ -85,8 +91,47 @@ async fn main() -> Result<()> {
 
     info!("Starting claude-deck");
 
+    // Initialize profile manager from config (uses std RwLock for sync access in renderer)
+    let profile_manager = web::server::init_profile_manager(&config);
+    let profile_manager = Arc::new(StdRwLock::new(profile_manager));
+    let config = Arc::new(TokioRwLock::new(config));
+
+    // Create config change channel
+    let (change_tx, mut change_rx) = mpsc::channel::<ConfigChangeEvent>(16);
+
+    // Create app command channel for triggering refreshes
+    let (app_cmd_tx, app_cmd_rx) = mpsc::channel::<AppCommand>(16);
+
+    // Spawn web server if enabled
+    let web_enabled = config.read().await.web.enabled;
+    if web_enabled {
+        let config_clone = Arc::clone(&config);
+        let profile_manager_clone = Arc::clone(&profile_manager);
+        let change_tx_clone = change_tx.clone();
+
+        tokio::spawn(async move {
+            if let Err(e) =
+                web::start_server(config_clone, profile_manager_clone, change_tx_clone).await
+            {
+                warn!("Web server error: {}", e);
+            }
+        });
+    }
+
+    // Spawn task to handle config change events and trigger display refreshes
+    tokio::spawn(async move {
+        while let Some(event) = change_rx.recv().await {
+            info!("Config change event: {:?}", event);
+            // Trigger display refresh for any config change
+            if let Err(e) = app_cmd_tx.send(AppCommand::RedrawButtons).await {
+                warn!("Failed to send redraw command: {}", e);
+            }
+        }
+    });
+
     // Run the application with graceful shutdown
-    let mut app = App::new(config).await?;
+    let config_snapshot = config.read().await.clone();
+    let mut app = App::new(config_snapshot, Arc::clone(&profile_manager), app_cmd_rx).await?;
 
     // Set up signal handlers for graceful shutdown
     let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate())?;

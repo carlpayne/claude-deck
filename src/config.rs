@@ -2,6 +2,8 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
+use crate::profiles::store::ProfileConfig;
+
 /// Application configuration
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -11,6 +13,10 @@ pub struct Config {
     pub new_session: NewSessionConfig,
     pub appearance: AppearanceConfig,
     pub models: ModelsConfig,
+    pub web: WebConfig,
+    pub giphy: GiphyConfig,
+    #[serde(default)]
+    pub profiles: Vec<ProfileConfig>,
 }
 
 impl Config {
@@ -147,6 +153,41 @@ impl Default for ModelsConfig {
                 "haiku".to_string(),
             ],
             default: "opus".to_string(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WebConfig {
+    /// Enable the web configuration UI
+    pub enabled: bool,
+    /// Port for the web UI server
+    pub port: u16,
+}
+
+impl Default for WebConfig {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            port: 9845,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GiphyConfig {
+    /// Giphy API key (uses default beta key if not specified)
+    pub api_key: String,
+}
+
+impl Default for GiphyConfig {
+    fn default() -> Self {
+        Self {
+            // Giphy's public beta API key - free tier, generous limits
+            // Users can override with their own key in config if needed
+            api_key: "dc6zaTOxFJmzC".to_string(),
         }
     }
 }

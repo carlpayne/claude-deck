@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>claude-deck Configuration</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>claude-deck</h1>
+            <div class="connection-status" id="connection-status">
+                <span class="status-dot"></span>
+                <span class="status-text">Connecting...</span>
+            </div>
+        </header>
+
+        <div class="profile-nav">
+            <nav class="profile-tabs" id="profile-tabs">
+                <!-- Profile tabs populated by JS -->
+            </nav>
+            <div class="profile-actions">
+                <button class="btn-action btn-reset hidden" id="btn-reset" title="Reset to defaults">
+                    Reset
+                </button>
+                <button class="btn-action btn-delete hidden" id="btn-delete" title="Delete profile">
+                    Delete
+                </button>
+                <button class="btn-action btn-new" id="btn-new-profile" title="Create new profile">
+                    + New Profile
+                </button>
+            </div>
+        </div>
+
+        <main>
+            <section class="button-grid" id="button-grid">
+                <!-- 2x5 button grid populated by JS -->
+            </section>
+
+            <aside class="button-editor" id="button-editor">
+                <h2>Button Editor</h2>
+                <p class="editor-hint">Click a button to edit</p>
+
+                <form id="editor-form" class="hidden">
+                    <input type="hidden" id="edit-position">
+
+                    <!-- DISPLAY SECTION: What the button looks like -->
+                    <fieldset class="form-section">
+                        <legend>Display</legend>
+
+                        <div class="form-group">
+                            <label for="edit-display-type">Show as</label>
+                            <select id="edit-display-type">
+                                <option value="text">Text Label</option>
+                                <option value="emoji">Emoji</option>
+                                <option value="image">Custom Image</option>
+                                <option value="gif">GIF (Giphy)</option>
+                                <option value="mic-icon">Microphone Icon</option>
+                            </select>
+                            <span class="form-hint hidden" id="mic-icon-hint">Action set to voice input (MIC)</span>
+                        </div>
+
+                        <div class="form-group" id="label-group">
+                            <label for="edit-label">Label</label>
+                            <input type="text" id="edit-label" maxlength="8" placeholder="Button text">
+                        </div>
+
+                        <div class="form-group hidden" id="emoji-display-group">
+                            <label for="edit-emoji-image">Emoji</label>
+                            <div class="emoji-input-row">
+                                <input type="text" id="edit-emoji-image" placeholder="Paste emoji">
+                                <div class="emoji-picker" id="emoji-picker">
+                                    <span class="emoji-option" data-emoji="👍">👍</span>
+                                    <span class="emoji-option" data-emoji="👎">👎</span>
+                                    <span class="emoji-option" data-emoji="✅">✅</span>
+                                    <span class="emoji-option" data-emoji="❌">❌</span>
+                                    <span class="emoji-option" data-emoji="❤️">❤️</span>
+                                    <span class="emoji-option" data-emoji="🔥">🔥</span>
+                                    <span class="emoji-option" data-emoji="⭐">⭐</span>
+                                    <span class="emoji-option" data-emoji="👀">👀</span>
+                                    <span class="emoji-option" data-emoji="🎉">🎉</span>
+                                    <span class="emoji-option" data-emoji="💯">💯</span>
+                                    <span class="emoji-option" data-emoji="🙏">🙏</span>
+                                    <span class="emoji-option" data-emoji="😂">😂</span>
+                                    <span class="emoji-option" data-emoji="🚀">🚀</span>
+                                    <span class="emoji-option" data-emoji="💡">💡</span>
+                                    <span class="emoji-option" data-emoji="⚠️">⚠️</span>
+                                    <span class="emoji-option" data-emoji="🐛">🐛</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="form-group hidden" id="image-display-group">
+                            <label>Image</label>
+                            <div class="image-drop-zone" id="image-drop-zone">
+                                <div class="drop-zone-content">
+                                    <span class="drop-icon">📷</span>
+                                    <span class="drop-text">Drop image or click</span>
+                                    <input type="file" id="image-file-input" accept="image/*" hidden>
+                                </div>
+                                <img id="image-preview" class="image-preview hidden" alt="Preview">
+                                <button type="button" id="clear-image" class="clear-image-btn hidden">✕</button>
+                            </div>
+                        </div>
+
+                        <div class="form-group hidden" id="gif-display-group">
+                            <label>GIF URL</label>
+                            <div class="gif-url-container">
+                                <input type="text" id="gif-url-input" placeholder="Paste GIF URL (e.g., from giphy.com, tenor.com)">
+                                <span class="form-hint">Right-click a GIF → Copy image address</span>
+                                <div class="gif-preview-container hidden" id="gif-preview-container">
+                                    <img id="gif-preview" class="gif-preview" alt="GIF Preview">
+                                    <button type="button" id="clear-gif" class="clear-image-btn">✕</button>
+                                </div>
+                            </div>
+                            <details class="giphy-search-section">
+                                <summary>Search Giphy (requires API key)</summary>
+                                <div class="gif-search-container">
+                                    <div class="gif-search-row">
+                                        <input type="text" id="gif-search-input" placeholder="Search Giphy...">
+                                        <button type="button" id="gif-search-btn" class="btn-secondary">Search</button>
+                                    </div>
+                                    <div class="gif-results" id="gif-results">
+                                        <p class="gif-hint">Enter a search term to find GIFs</p>
+                                    </div>
+                                </div>
+                            </details>
+                        </div>
+
+                        <div class="form-group">
+                            <label for="edit-color">Color</label>
+                            <div class="color-presets" id="color-presets"></div>
+                            <input type="color" id="edit-color" class="color-input-single">
+                            <input type="hidden" id="edit-bright-color">
+                        </div>
+                    </fieldset>
+
+                    <!-- ACTION SECTION: What the button does -->
+                    <fieldset class="form-section">
+                        <legend>Action</legend>
+
+                        <div class="form-group">
+                            <label for="edit-action-type">When pressed</label>
+                            <select id="edit-action-type">
+                                <option value="custom">Claude Code action</option>
+                                <option value="key">Send keyboard key</option>
+                                <option value="text">Type text</option>
+                                <option value="emoji">Type emoji shortcode (Slack)</option>
+                            </select>
+                        </div>
+
+                        <div class="form-group" id="action-value-group">
+                            <label for="edit-action-value">Value</label>
+                            <input type="text" id="edit-action-value" class="hidden" placeholder="Value">
+                            <select id="edit-action-key" class="hidden"></select>
+                            <select id="edit-action-builtin"></select>
+                        </div>
+
+                        <div class="form-group hidden" id="modifier-group">
+                            <label>Modifiers</label>
+                            <div class="modifier-checkboxes">
+                                <label class="modifier-checkbox">
+                                    <input type="checkbox" id="mod-cmd"> ⌘ Command
+                                </label>
+                                <label class="modifier-checkbox">
+                                    <input type="checkbox" id="mod-shift"> ⇧ Shift
+                                </label>
+                                <label class="modifier-checkbox">
+                                    <input type="checkbox" id="mod-alt"> ⌥ Option
+                                </label>
+                                <label class="modifier-checkbox">
+                                    <input type="checkbox" id="mod-ctrl"> ⌃ Control
+                                </label>
+                            </div>
+                        </div>
+
+                        <div class="form-group hidden" id="auto-submit-group">
+                            <label class="modifier-checkbox">
+                                <input type="checkbox" id="edit-auto-submit"> Press Enter after typing
+                            </label>
+                            <span class="form-hint">Automatically submit after typing the text/emoji</span>
+                        </div>
+                    </fieldset>
+
+                    <div class="form-actions">
+                        <button type="submit" class="btn-primary">Save</button>
+                        <button type="button" class="btn-secondary" id="btn-cancel">Cancel</button>
+                    </div>
+                    <div class="form-actions-secondary">
+                        <button type="button" class="btn-copy" id="btn-copy" title="Copy this button's config to another position">
+                            Copy to...
+                        </button>
+                    </div>
+                </form>
+            </aside>
+        </main>
+
+        <footer>
+            <button class="btn-reload" id="btn-reload">
+                Reload Config
+            </button>
+            <span class="footer-hint">Changes are saved automatically</span>
+        </footer>
+    </div>
+
+    <!-- Create Profile Modal -->
+    <div class="modal-overlay hidden" id="create-profile-modal">
+        <div class="modal-content">
+            <h2>Create New Profile</h2>
+            <form id="create-profile-form">
+                <div class="form-group">
+                    <label for="new-profile-app">Application</label>
+                    <select id="new-profile-app" required>
+                        <option value="">Select an app...</option>
+                    </select>
+                </div>
+
+                <div class="form-group">
+                    <label for="new-profile-name">Profile Name</label>
+                    <input type="text" id="new-profile-name" placeholder="e.g., my-app" required>
+                </div>
+
+                <div class="form-group">
+                    <label for="new-profile-copy">Copy buttons from</label>
+                    <select id="new-profile-copy">
+                        <option value="">Empty (default buttons)</option>
+                    </select>
+                </div>
+
+                <div class="form-actions">
+                    <button type="submit" class="btn-primary">Create</button>
+                    <button type="button" class="btn-secondary" id="btn-cancel-create">Cancel</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>

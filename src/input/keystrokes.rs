@@ -3,7 +3,7 @@ use std::time::Duration;
 use tracing::debug;
 
 /// Key types for input
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 pub enum Key {
     Enter,
     Escape,
@@ -18,6 +18,102 @@ pub enum Key {
     End,
     Backspace,
     Delete,
+    Space,
+    // Function keys
+    F1, F2, F3, F4, F5, F6, F7, F8, F9, F10, F11, F12,
+    // Character key (letter, number, or symbol)
+    Char(char),
+}
+
+/// Parsed keyboard shortcut with modifiers
+#[derive(Debug, Clone)]
+pub struct KeyboardShortcut {
+    pub cmd: bool,
+    pub ctrl: bool,
+    pub alt: bool,
+    pub shift: bool,
+    pub key: Key,
+}
+
+impl KeyboardShortcut {
+    /// Parse a shortcut string like "Cmd+Shift+C" or just "Enter"
+    pub fn parse(s: &str) -> Option<Self> {
+        let parts: Vec<&str> = s.split('+').collect();
+        if parts.is_empty() {
+            return None;
+        }
+
+        let mut shortcut = KeyboardShortcut {
+            cmd: false,
+            ctrl: false,
+            alt: false,
+            shift: false,
+            key: Key::Enter,
+        };
+
+        for (i, part) in parts.iter().enumerate() {
+            let part_lower = part.to_lowercase();
+            let is_last = i == parts.len() - 1;
+
+            if !is_last {
+                // This is a modifier
+                match part_lower.as_str() {
+                    "cmd" | "command" | "meta" => shortcut.cmd = true,
+                    "ctrl" | "control" => shortcut.ctrl = true,
+                    "alt" | "option" | "opt" => shortcut.alt = true,
+                    "shift" => shortcut.shift = true,
+                    _ => return None, // Unknown modifier
+                }
+            } else {
+                // This is the main key
+                shortcut.key = string_to_key(part)?;
+            }
+        }
+
+        Some(shortcut)
+    }
+
+    /// Check if this shortcut has any modifiers
+    pub fn has_modifiers(&self) -> bool {
+        self.cmd || self.ctrl || self.alt || self.shift
+    }
+}
+
+/// Convert string to Key enum
+pub fn string_to_key(s: &str) -> Option<Key> {
+    let lower = s.to_lowercase();
+    match lower.as_str() {
+        "enter" | "return" => Some(Key::Enter),
+        "escape" | "esc" => Some(Key::Escape),
+        "tab" => Some(Key::Tab),
+        "space" => Some(Key::Space),
+        "up" => Some(Key::Up),
+        "down" => Some(Key::Down),
+        "left" => Some(Key::Left),
+        "right" => Some(Key::Right),
+        "pageup" => Some(Key::PageUp),
+        "pagedown" => Some(Key::PageDown),
+        "home" => Some(Key::Home),
+        "end" => Some(Key::End),
+        "backspace" => Some(Key::Backspace),
+        "delete" => Some(Key::Delete),
+        // Function keys
+        "f1" => Some(Key::F1),
+        "f2" => Some(Key::F2),
+        "f3" => Some(Key::F3),
+        "f4" => Some(Key::F4),
+        "f5" => Some(Key::F5),
+        "f6" => Some(Key::F6),
+        "f7" => Some(Key::F7),
+        "f8" => Some(Key::F8),
+        "f9" => Some(Key::F9),
+        "f10" => Some(Key::F10),
+        "f11" => Some(Key::F11),
+        "f12" => Some(Key::F12),
+        // Single character (letter, number, symbol)
+        _ if s.len() == 1 => Some(Key::Char(s.chars().next().unwrap())),
+        _ => None,
+    }
 }
 
 /// Sends keystrokes to the focused window (attach mode)
@@ -32,25 +128,58 @@ impl KeystrokeSender {
     }
 
     /// Send a single key press
-    pub fn send_key(&mut self, key: Key) {
-        let enigo_key = match key {
-            Key::Enter => EnigoKey::Return,
-            Key::Escape => EnigoKey::Escape,
-            Key::Tab => EnigoKey::Tab,
-            Key::Up => EnigoKey::UpArrow,
-            Key::Down => EnigoKey::DownArrow,
-            Key::Left => EnigoKey::LeftArrow,
-            Key::Right => EnigoKey::RightArrow,
-            Key::PageUp => EnigoKey::PageUp,
-            Key::PageDown => EnigoKey::PageDown,
-            Key::Home => EnigoKey::Home,
-            Key::End => EnigoKey::End,
-            Key::Backspace => EnigoKey::Backspace,
-            Key::Delete => EnigoKey::Delete,
-        };
-
+    pub fn send_key(&mut self, key: &Key) {
+        let enigo_key = key_to_enigo(key);
         debug!("Sending key: {:?}", enigo_key);
         let _ = self.enigo.key(enigo_key, enigo::Direction::Click);
+    }
+
+    /// Send a keyboard shortcut (key with optional modifiers)
+    pub fn send_shortcut(&mut self, shortcut: &KeyboardShortcut) {
+        debug!("Sending shortcut: {:?}", shortcut);
+
+        // First, ensure all modifiers are released (clean slate)
+        // This helps when previous shortcuts may have left modifier state
+        self.release_all_modifiers();
+
+        // Build list of modifiers to press
+        let mut modifiers = Vec::new();
+        if shortcut.cmd {
+            modifiers.push(EnigoKey::Meta);
+        }
+        if shortcut.ctrl {
+            modifiers.push(EnigoKey::Control);
+        }
+        if shortcut.alt {
+            modifiers.push(EnigoKey::Alt);
+        }
+        if shortcut.shift {
+            modifiers.push(EnigoKey::Shift);
+        }
+
+        let main_key = key_to_enigo(&shortcut.key);
+        self.send_key_with_modifiers(&modifiers, main_key);
+    }
+
+    /// Release all modifier keys to ensure clean state
+    fn release_all_modifiers(&mut self) {
+        let _ = self.enigo.key(EnigoKey::Meta, enigo::Direction::Release);
+        let _ = self.enigo.key(EnigoKey::Control, enigo::Direction::Release);
+        let _ = self.enigo.key(EnigoKey::Alt, enigo::Direction::Release);
+        let _ = self.enigo.key(EnigoKey::Shift, enigo::Direction::Release);
+        let _ = self.enigo.key(EnigoKey::RCommand, enigo::Direction::Release);
+        let _ = self.enigo.key(EnigoKey::RControl, enigo::Direction::Release);
+    }
+
+    /// Parse and send a shortcut string like "Cmd+C" or "Enter"
+    pub fn send_shortcut_string(&mut self, shortcut_str: &str) -> bool {
+        if let Some(shortcut) = KeyboardShortcut::parse(shortcut_str) {
+            self.send_shortcut(&shortcut);
+            true
+        } else {
+            debug!("Failed to parse shortcut: {}", shortcut_str);
+            false
+        }
     }
 
     /// Send text as typed characters
@@ -94,13 +223,23 @@ impl KeystrokeSender {
             let _ = self.enigo.key(*modifier, enigo::Direction::Press);
         }
 
+        // Small delay to ensure modifiers are registered
+        std::thread::sleep(Duration::from_millis(10));
+
         // Press and release the main key
         let _ = self.enigo.key(key, enigo::Direction::Click);
+
+        // Small delay before releasing modifiers
+        std::thread::sleep(Duration::from_millis(10));
 
         // Release modifiers in reverse order
         for modifier in modifiers.iter().rev() {
             let _ = self.enigo.key(*modifier, enigo::Direction::Release);
         }
+
+        // Delay after releasing to ensure system processes the release
+        // before any subsequent keystrokes
+        std::thread::sleep(Duration::from_millis(20));
     }
 
     // === Zoom controls ===
@@ -208,5 +347,38 @@ impl KeystrokeSender {
 impl Default for KeystrokeSender {
     fn default() -> Self {
         Self::new()
+    }
+}
+
+/// Convert our Key enum to Enigo's key type
+fn key_to_enigo(key: &Key) -> EnigoKey {
+    match key {
+        Key::Enter => EnigoKey::Return,
+        Key::Escape => EnigoKey::Escape,
+        Key::Tab => EnigoKey::Tab,
+        Key::Up => EnigoKey::UpArrow,
+        Key::Down => EnigoKey::DownArrow,
+        Key::Left => EnigoKey::LeftArrow,
+        Key::Right => EnigoKey::RightArrow,
+        Key::PageUp => EnigoKey::PageUp,
+        Key::PageDown => EnigoKey::PageDown,
+        Key::Home => EnigoKey::Home,
+        Key::End => EnigoKey::End,
+        Key::Backspace => EnigoKey::Backspace,
+        Key::Delete => EnigoKey::Delete,
+        Key::Space => EnigoKey::Space,
+        Key::F1 => EnigoKey::F1,
+        Key::F2 => EnigoKey::F2,
+        Key::F3 => EnigoKey::F3,
+        Key::F4 => EnigoKey::F4,
+        Key::F5 => EnigoKey::F5,
+        Key::F6 => EnigoKey::F6,
+        Key::F7 => EnigoKey::F7,
+        Key::F8 => EnigoKey::F8,
+        Key::F9 => EnigoKey::F9,
+        Key::F10 => EnigoKey::F10,
+        Key::F11 => EnigoKey::F11,
+        Key::F12 => EnigoKey::F12,
+        Key::Char(c) => EnigoKey::Unicode(*c),
     }
 }

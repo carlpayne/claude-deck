@@ -129,16 +129,14 @@ impl DeviceManager {
         }
     }
 
-    /// Set button image (72x72 RGB)
-    pub async fn set_button_image(&self, button: u8, image: &RgbImage) -> Result<()> {
+    /// Set button image (112x112 RGB) - takes ownership to avoid clone
+    pub async fn set_button_image(&self, button: u8, image: RgbImage) -> Result<()> {
         if button >= BUTTON_COUNT {
             return Err(anyhow!("Invalid button index: {}", button));
         }
 
-        debug!("Setting image for button {}", button);
-
-        // Convert RgbImage to DynamicImage
-        let dynamic_image = DynamicImage::ImageRgb8(image.clone());
+        // Convert RgbImage to DynamicImage (no clone needed since we own the image)
+        let dynamic_image = DynamicImage::ImageRgb8(image);
 
         self.device
             .set_button_image(button, Self::button_image_format(), dynamic_image)
@@ -268,17 +266,14 @@ impl DeviceManager {
                 Ok(DeviceInput::EncoderStateChange(encoders))
             }
 
-            // Knob 1 rotation (0x71 CCW, 0xa1 CW)
-            0x71 | 0xa1 => {
+            // Encoder 0 rotation (leftmost knob)
+            // Pattern: 0x70 = CCW, 0x71 = CW (consistent with other encoders using +1 for CW)
+            // Also handles 0xa0/0xa1 which some devices send
+            0x70 | 0x71 | 0xa0 | 0xa1 => {
                 let mut directions = vec![0i8; ENCODER_COUNT as usize];
-                directions[0] = if event_type == 0xa1 { 1 } else { -1 };
-                Ok(DeviceInput::EncoderTwist(directions))
-            }
-
-            // Knob 4 rotation (0x70 CCW, 0xa0 CW) - also mapped to encoder 0 (scroll)
-            0x70 | 0xa0 => {
-                let mut directions = vec![0i8; ENCODER_COUNT as usize];
-                directions[0] = if event_type == 0xa0 { 1 } else { -1 };
+                // Odd = CW (+1), Even = CCW (-1)
+                let dir = if event_type & 1 == 1 { 1 } else { -1 };
+                directions[0] = dir;
                 Ok(DeviceInput::EncoderTwist(directions))
             }
 
@@ -326,9 +321,9 @@ impl DeviceManager {
         }
     }
 
-    /// Poll for input events (non-blocking)
+    /// Poll for input events (non-blocking, 1ms timeout for responsive animations)
     pub async fn poll_event(&mut self) -> Result<Option<InputEvent>> {
-        let timeout = Duration::from_millis(10);
+        let timeout = Duration::from_millis(1);
 
         match self
             .device

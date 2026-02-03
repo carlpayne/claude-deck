@@ -49,6 +49,9 @@ pub struct AppState {
     /// Flag to trigger intro animation replay
     #[serde(skip)]
     pub play_intro: bool,
+    /// Screen is locked - input disabled for security
+    #[serde(skip)]
+    pub screen_locked: bool,
 
     // Configuration
     /// Available models (from config)
@@ -60,6 +63,9 @@ pub struct AppState {
     /// Device brightness (from config)
     #[serde(skip)]
     pub brightness: u8,
+    /// Flag to indicate brightness needs to be applied to device
+    #[serde(skip)]
+    pub brightness_changed: bool,
 }
 
 impl Default for AppState {
@@ -87,9 +93,11 @@ impl AppState {
             button_flash: None,
             focused_app: String::new(),
             play_intro: false,
+            screen_locked: false,
             available_models: default_models,
             terminal_app: "Terminal".to_string(),
             brightness: 80,
+            brightness_changed: false,
         }
     }
 
@@ -123,10 +131,25 @@ impl AppState {
             button_flash: None,
             focused_app: String::new(),
             play_intro: false,
+            screen_locked: false,
             available_models,
             terminal_app,
             brightness,
+            brightness_changed: false,
         }
+    }
+
+    /// Adjust brightness by a delta (positive or negative)
+    /// Returns the new brightness value
+    pub fn adjust_brightness(&mut self, delta: i8) -> u8 {
+        let step = 20i16; // 20% steps (device supports 5 levels: 20, 40, 60, 80, 100)
+        let change = delta as i16 * step;
+        let new_brightness = (self.brightness as i16 + change).clamp(20, 100) as u8;
+        if new_brightness != self.brightness {
+            self.brightness = new_brightness;
+            self.brightness_changed = true;
+        }
+        self.brightness
     }
 
     /// Flash a button for visual feedback (shows as active briefly)

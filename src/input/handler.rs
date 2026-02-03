@@ -1,6 +1,6 @@
 use anyhow::Result;
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock as StdRwLock};
 use std::time::{Duration, Instant};
 use tokio::process::Command;
 use tokio::sync::RwLock;
@@ -8,15 +8,12 @@ use tokio::time::sleep;
 use tracing::{debug, info, warn};
 
 use crate::device::InputEvent;
-use crate::profiles::{get_profile_for_app, AppProfile, ButtonAction};
+use crate::profiles::{ButtonAction, ProfileManager};
 use crate::state::AppState;
 
 use super::keystrokes::{Key, KeystrokeSender};
 
 const LONG_PRESS_DURATION: Duration = Duration::from_secs(2);
-
-/// Buttons that support hold-to-activate (fire when threshold reached, not on release)
-const HOLD_TO_ACTIVATE_BUTTONS: &[u8] = &[7]; // MIC (clear line)
 
 /// Convert device button ID to logical button ID
 fn device_to_logical_button(device_id: u8) -> Option<u8> {
@@ -30,6 +27,7 @@ fn device_to_logical_button(device_id: u8) -> Option<u8> {
 /// Handles input events from the device
 pub struct InputHandler {
     state: Arc<RwLock<AppState>>,
+    profile_manager: Arc<StdRwLock<ProfileManager>>,
     keystroke_sender: KeystrokeSender,
     button_press_times: HashMap<u8, Instant>,
     long_press_fired: HashSet<u8>,
@@ -43,9 +41,10 @@ struct DictationState {
 }
 
 impl InputHandler {
-    pub fn new(state: Arc<RwLock<AppState>>) -> Self {
+    pub fn new(state: Arc<RwLock<AppState>>, profile_manager: Arc<StdRwLock<ProfileManager>>) -> Self {
         Self {
             state,
+            profile_manager,
             keystroke_sender: KeystrokeSender::new(),
             button_press_times: HashMap::new(),
             long_press_fired: HashSet::new(),
@@ -61,7 +60,10 @@ impl InputHandler {
     pub async fn check_long_press(&mut self) -> Result<bool> {
         let mut action_fired = false;
 
-        for &button in HOLD_TO_ACTIVATE_BUTTONS {
+        // Find buttons with MIC action (support long-press to clear line)
+        let mic_buttons = self.find_mic_buttons().await;
+
+        for button in mic_buttons {
             // Skip if already fired for this press
             if self.long_press_fired.contains(&button) {
                 continue;
@@ -70,12 +72,10 @@ impl InputHandler {
             // Check if button is being held long enough
             if let Some(press_time) = self.button_press_times.get(&button) {
                 if press_time.elapsed() >= LONG_PRESS_DURATION {
-                    // Fire the long-press action now
-                    if button == 7 {
-                        self.clear_current_line();
-                        self.state.write().await.flash_button(button);
-                        action_fired = true;
-                    }
+                    // Fire the long-press action now (clear line)
+                    self.clear_current_line();
+                    self.state.write().await.flash_button(button);
+                    action_fired = true;
                     // Mark as fired so we don't fire again
                     self.long_press_fired.insert(button);
                 }
@@ -83,6 +83,23 @@ impl InputHandler {
         }
 
         Ok(action_fired)
+    }
+
+    /// Find all buttons that have a MIC action in the current profile
+    async fn find_mic_buttons(&self) -> Vec<u8> {
+        let state = self.state.read().await;
+        let manager = self.profile_manager.read().unwrap();
+
+        let mut mic_buttons = Vec::new();
+        if let Some(profile) = manager.find_profile_for_app(&state.focused_app) {
+            for button in &profile.buttons {
+                let config = button.to_button_config();
+                if matches!(&config.action, ButtonAction::Custom(action) if *action == "MIC") {
+                    mic_buttons.push(button.position);
+                }
+            }
+        }
+        mic_buttons
     }
 
     /// Handle an input event from the device
@@ -133,62 +150,69 @@ impl InputHandler {
             button, press_duration, is_long_press
         );
 
-        // Get the current app profile
-        let profile = {
+        // Get focused app name
+        let focused_app = {
             let state = self.state.read().await;
-            get_profile_for_app(&state.focused_app)
+            state.focused_app.clone()
         };
 
-        // Route to profile-specific handler
-        match profile {
-            AppProfile::Slack => self.handle_slack_button(button).await,
-            AppProfile::Claude => self.handle_claude_button(button, is_long_press).await?,
+        // Get button config from ProfileManager (respects user config from web UI)
+        let config = {
+            let manager = self.profile_manager.read().unwrap();
+            manager.get_button_config(&focused_app, button)
+        };
+
+        // Execute the action based on config
+        match &config.action {
+            ButtonAction::Emoji { value, auto_submit } => {
+                info!("Emoji: {} -> {}{}", config.label, value, if *auto_submit { " [auto-submit]" } else { "" });
+                self.send_text(value);
+                if *auto_submit {
+                    self.send_key(&Key::Enter);
+                }
+            }
+            ButtonAction::Text { value, auto_submit } => {
+                info!("Text: {}{}", value, if *auto_submit { " [auto-submit]" } else { "" });
+                self.send_text(value);
+                if *auto_submit {
+                    self.send_key(&Key::Enter);
+                }
+            }
+            ButtonAction::Key(shortcut) => {
+                info!("Shortcut: {}", shortcut);
+                self.keystroke_sender.send_shortcut_string(shortcut);
+            }
+            ButtonAction::Custom(action_name) => {
+                // Custom actions are handled by Claude-specific logic
+                self.handle_claude_button(button, is_long_press, action_name).await?;
+            }
         }
 
         Ok(())
     }
 
-    /// Handle button press in Slack mode (emoji shortcuts)
-    async fn handle_slack_button(&mut self, button: u8) {
-        let profile = AppProfile::Slack;
-        let config = profile.button_config(button);
-
-        match config.action {
-            ButtonAction::SlackEmoji(emoji) => {
-                info!("Slack emoji: {} -> {}", config.label, emoji);
-                self.send_text(&emoji);
-            }
-            ButtonAction::Text(text) => {
-                self.send_text(&text);
-            }
-            ButtonAction::Key(key) => {
-                self.send_key(key);
-            }
-            ButtonAction::Custom(_) => {
-                // Fallback to Claude handling if custom
-            }
-        }
-    }
-
-    /// Handle button press in Claude mode (default behavior)
-    async fn handle_claude_button(&mut self, button: u8, is_long_press: bool) -> Result<()> {
-        match (button, is_long_press) {
+    /// Handle button press in Claude mode (custom actions)
+    async fn handle_claude_button(&mut self, button: u8, is_long_press: bool, action_name: &str) -> Result<()> {
+        // Route based on action name (allows customization via config)
+        match (action_name.to_uppercase().as_str(), is_long_press) {
             // Top row - immediate actions
-            (0, _) => self.send_accept().await?,
-            (1, _) => self.send_reject().await?,
-            (2, _) => self.send_stop(),
-            (3, _) => self.send_retry().await,
-            (4, _) => self.send_rewind().await,
+            ("ACCEPT", _) => self.send_accept().await?,
+            ("REJECT", _) => self.send_reject().await?,
+            ("STOP", _) => self.send_stop(),
+            ("RETRY", _) => self.send_retry().await,
+            ("REWIND", _) => self.send_rewind().await,
 
             // Bottom row - with long-press variants
-            (5, _) => self.send_trust(),
-            (6, false) => self.send_tab(),
-            (6, true) => self.open_new_session().await,
+            ("TRUST", _) => self.send_trust(),
+            ("TAB", false) => self.send_tab(),
+            ("TAB", true) => self.open_new_session().await,
             // MIC: short press = voice input, long press = clear line (handled by check_long_press)
-            (7, false) => self.trigger_voice_input().await,
-            (8, _) => self.send_enter(),
-            (9, _) => self.send_clear_command().await?,
-            _ => {}
+            ("MIC", false) => self.trigger_voice_input().await,
+            ("ENTER", _) => self.send_enter(),
+            ("CLEAR", _) => self.send_clear_command().await?,
+            _ => {
+                debug!("Unknown custom action: {} (button {})", action_name, button);
+            }
         }
 
         Ok(())
@@ -199,7 +223,7 @@ impl InputHandler {
         debug!("Encoder {} rotated: {}", encoder, direction);
 
         match encoder {
-            0 => self.scroll_output(direction),
+            0 => self.adjust_brightness(direction).await,
             1 => self.cycle_model(direction).await,
             2 => self.navigate_history(direction),
             _ => {}
@@ -225,11 +249,11 @@ impl InputHandler {
             2 => {
                 // Select current option (send Enter)
                 info!("Encoder 2 press: selecting option");
-                self.send_key(Key::Enter);
+                self.send_key(&Key::Enter);
             }
             3 => {
                 // Jump to bottom
-                self.send_key(Key::End);
+                self.send_key(&Key::End);
             }
             _ => {}
         }
@@ -243,7 +267,7 @@ impl InputHandler {
         self.keystroke_sender.send_text(text);
     }
 
-    fn send_key(&mut self, key: Key) {
+    fn send_key(&mut self, key: &Key) {
         self.keystroke_sender.send_key(key);
     }
 
@@ -251,33 +275,33 @@ impl InputHandler {
 
     async fn send_accept(&mut self) -> Result<()> {
         info!("ACCEPT: sending Enter (select Yes)");
-        self.send_key(Key::Enter);
+        self.send_key(&Key::Enter);
         self.state.write().await.waiting_for_input = false;
         Ok(())
     }
 
     async fn send_reject(&mut self) -> Result<()> {
         info!("REJECT: sending Escape (cancel)");
-        self.send_key(Key::Escape);
+        self.send_key(&Key::Escape);
         self.state.write().await.waiting_for_input = false;
         Ok(())
     }
 
     fn send_stop(&mut self) {
         info!("STOP: sending Escape");
-        self.send_key(Key::Escape);
+        self.send_key(&Key::Escape);
     }
 
     async fn send_retry(&mut self) {
         info!("RETRY: sending Up + Enter");
-        self.send_key(Key::Up);
+        self.send_key(&Key::Up);
         sleep(Duration::from_millis(50)).await;
-        self.send_key(Key::Enter);
+        self.send_key(&Key::Enter);
     }
 
     fn send_enter(&mut self) {
         debug!("ENTER: sending Enter");
-        self.send_key(Key::Enter);
+        self.send_key(&Key::Enter);
     }
 
     fn send_trust(&mut self) {
@@ -287,14 +311,14 @@ impl InputHandler {
 
     fn send_tab(&mut self) {
         debug!("TAB: sending Tab");
-        self.send_key(Key::Tab);
+        self.send_key(&Key::Tab);
     }
 
     async fn send_rewind(&mut self) {
         info!("REWIND: sending double Escape");
-        self.send_key(Key::Escape);
+        self.send_key(&Key::Escape);
         sleep(Duration::from_millis(100)).await;
-        self.send_key(Key::Escape);
+        self.send_key(&Key::Escape);
     }
 
     fn clear_current_line(&mut self) {
@@ -306,7 +330,7 @@ impl InputHandler {
     async fn send_clear_command(&mut self) -> Result<()> {
         info!("CLEAR: sending /clear + Enter");
         self.send_text("/clear");
-        self.send_key(Key::Enter);
+        self.send_key(&Key::Enter);
         self.state.write().await.task_name = "READY".to_string();
         Ok(())
     }
@@ -380,18 +404,15 @@ impl InputHandler {
 
     // === Encoder actions ===
 
-    fn navigate_history(&mut self, direction: i8) {
-        let key = if direction > 0 { Key::Down } else { Key::Up };
-        self.send_key(key);
+    async fn adjust_brightness(&mut self, direction: i8) {
+        let mut state = self.state.write().await;
+        let brightness = state.adjust_brightness(direction);
+        debug!("Brightness: {}%", brightness);
     }
 
-    fn scroll_output(&mut self, direction: i8) {
-        let key = if direction > 0 {
-            Key::PageDown
-        } else {
-            Key::PageUp
-        };
-        self.send_key(key);
+    fn navigate_history(&mut self, direction: i8) {
+        let key = if direction > 0 { Key::Down } else { Key::Up };
+        self.send_key(&key);
     }
 
     async fn cycle_model(&mut self, direction: i8) {
@@ -409,6 +430,6 @@ impl InputHandler {
 
         info!("Switching to model: {}", model);
         self.send_text(&format!("/model {}", model));
-        self.send_key(Key::Enter);
+        self.send_key(&Key::Enter);
     }
 }

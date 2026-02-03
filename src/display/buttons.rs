@@ -1,10 +1,51 @@
 use anyhow::Result;
 use image::{Rgb, RgbImage};
 use rusttype::Font;
+use std::collections::HashMap;
+use std::sync::Mutex;
 
 use super::renderer::{button_colors, draw_text, text_width, WHITE};
 use crate::device::{BUTTON_HEIGHT, BUTTON_WIDTH};
 use crate::profiles::ButtonConfig;
+
+/// Cache for button backgrounds (gradient + border) keyed by color
+/// Stores raw pixel data to enable fast memcpy instead of clone
+static BACKGROUND_CACHE: std::sync::OnceLock<Mutex<HashMap<(u8, u8, u8), Vec<u8>>>> =
+    std::sync::OnceLock::new();
+
+/// Get or create a button with cached background for the given base color
+/// Returns a new image with the background already rendered (fast memcpy)
+fn get_button_with_background(base_color: Rgb<u8>) -> RgbImage {
+    let cache = BACKGROUND_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let key = (base_color[0], base_color[1], base_color[2]);
+
+    if let Ok(mut guard) = cache.lock() {
+        if let Some(raw_data) = guard.get(&key) {
+            // Fast path: create image from cached raw bytes (just memcpy)
+            return RgbImage::from_raw(BUTTON_WIDTH, BUTTON_HEIGHT, raw_data.clone())
+                .unwrap_or_else(|| {
+                    let mut img = RgbImage::new(BUTTON_WIDTH, BUTTON_HEIGHT);
+                    fill_gradient(&mut img, darken(base_color, 0.4), darken(base_color, 0.6));
+                    draw_styled_border(&mut img, base_color, false);
+                    img
+                });
+        }
+
+        // Create new background and cache raw bytes
+        let mut img = RgbImage::new(BUTTON_WIDTH, BUTTON_HEIGHT);
+        fill_gradient(&mut img, darken(base_color, 0.4), darken(base_color, 0.6));
+        draw_styled_border(&mut img, base_color, false);
+
+        guard.insert(key, img.as_raw().clone());
+        img
+    } else {
+        // Fallback if lock fails - create without caching
+        let mut img = RgbImage::new(BUTTON_WIDTH, BUTTON_HEIGHT);
+        fill_gradient(&mut img, darken(base_color, 0.4), darken(base_color, 0.6));
+        draw_styled_border(&mut img, base_color, false);
+        img
+    }
+}
 
 /// Render a colored button with gradient effect
 pub fn render_button_image(
@@ -191,11 +232,132 @@ fn brighten(color: Rgb<u8>, factor: f32) -> Rgb<u8> {
     ])
 }
 
+/// Load a GIF from URL and return the first frame as RgbaImage
+/// Uses a simple cache to avoid repeated fetches
+fn load_gif_image(url: &str) -> Option<image::RgbaImage> {
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+    use std::io::Read;
+
+    // Simple in-memory cache for fetched GIFs
+    static GIF_CACHE: std::sync::OnceLock<Mutex<HashMap<String, Option<image::RgbaImage>>>> =
+        std::sync::OnceLock::new();
+
+    let cache = GIF_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
+    let mut cache_guard = cache.lock().ok()?;
+
+    // Check cache first
+    if let Some(cached) = cache_guard.get(url) {
+        return cached.clone();
+    }
+
+    // Fetch the GIF
+    let result = (|| -> Option<image::RgbaImage> {
+        let response = ureq::get(url).call().ok()?;
+
+        // Read response body
+        let mut bytes = Vec::new();
+        response.into_reader().take(5_000_000).read_to_end(&mut bytes).ok()?; // 5MB limit
+
+        // Load as image (handles GIF first frame automatically)
+        let img = image::load_from_memory(&bytes).ok()?;
+        Some(img.to_rgba8())
+    })();
+
+    // Cache the result (even if None, to avoid repeated failed fetches)
+    cache_guard.insert(url.to_string(), result.clone());
+    result
+}
+
+/// Render an RGBA image centered on the button
+fn render_image_on_button(img: &mut RgbImage, source: &image::RgbaImage) {
+    let image_size = 90u32; // Target size (buttons are 112x112)
+
+    // Skip resize if image is already the target size (e.g., pre-resized GIF frames)
+    if source.width() == image_size && source.height() == image_size {
+        render_presized_image_on_button(img, source);
+        return;
+    }
+
+    let resized = image::imageops::resize(
+        source,
+        image_size,
+        image_size,
+        image::imageops::FilterType::Triangle, // Fast bilinear instead of slow Lanczos3
+    );
+
+    render_presized_image_on_button(img, &resized);
+}
+
+/// Render a pre-sized 90x90 image centered on the button (fast path)
+/// Uses direct buffer access for better performance
+#[inline]
+fn render_presized_image_on_button(img: &mut RgbImage, source: &image::RgbaImage) {
+    let src_width = source.width() as usize;
+    let src_height = source.height() as usize;
+    let x_offset = ((BUTTON_WIDTH - source.width()) / 2) as usize;
+    let y_offset = ((BUTTON_HEIGHT - source.height()) / 2) as usize;
+    let dst_width = BUTTON_WIDTH as usize;
+
+    let src_raw = source.as_raw();
+    let dst_raw = img.as_mut();
+
+    // Direct buffer access - much faster than per-pixel put_pixel
+    for sy in 0..src_height {
+        let dy = sy + y_offset;
+        let src_row_start = sy * src_width * 4;
+        let dst_row_start = dy * dst_width * 3;
+
+        for sx in 0..src_width {
+            let src_idx = src_row_start + sx * 4;
+            let alpha = src_raw[src_idx + 3];
+
+            // Skip transparent pixels
+            if alpha > 128 {
+                let dx = sx + x_offset;
+                let dst_idx = dst_row_start + dx * 3;
+
+                dst_raw[dst_idx] = src_raw[src_idx];         // R
+                dst_raw[dst_idx + 1] = src_raw[src_idx + 1]; // G
+                dst_raw[dst_idx + 2] = src_raw[src_idx + 2]; // B
+            }
+        }
+    }
+}
+
 /// Render a button with profile-specific configuration
 pub fn render_button_with_config(
-    _font: &Font,
+    font: &Font,
     config: &ButtonConfig,
     active: bool,
+) -> Result<RgbImage> {
+    render_button_with_config_and_id(font, config, active, None)
+}
+
+/// Render a button with a pre-provided GIF frame (fast path for animation)
+/// Uses cached background for maximum performance
+pub fn render_button_with_gif_frame(
+    _font: &Font,
+    config: &ButtonConfig,
+    gif_frame: &image::RgbaImage,
+) -> Result<RgbImage> {
+    let (base_color, _bright_color) = config.colors;
+
+    // Get button with cached background (gradient + border) - fast memcpy
+    let mut img = get_button_with_background(base_color);
+
+    // Render the pre-provided GIF frame (already pre-sized)
+    render_presized_image_on_button(&mut img, gif_frame);
+
+    Ok(img)
+}
+
+/// Render a button with profile-specific configuration and button ID for GIF animation
+pub fn render_button_with_config_and_id(
+    font: &Font,
+    config: &ButtonConfig,
+    active: bool,
+    button_id: Option<u8>,
 ) -> Result<RgbImage> {
     let mut img = RgbImage::new(BUTTON_WIDTH, BUTTON_HEIGHT);
 
@@ -212,42 +374,94 @@ pub fn render_button_with_config(
     let border_color = if active { bright_color } else { base_color };
     draw_styled_border(&mut img, border_color, active);
 
-    // If there's an emoji image, render it
-    if let Some(emoji_name) = config.emoji_image {
-        if let Some(emoji_img) = load_emoji_image(emoji_name) {
-            // Center the emoji on the button
-            let emoji_size = 56u32; // Target size for emoji
-            let resized = image::imageops::resize(
-                &emoji_img,
-                emoji_size,
-                emoji_size,
-                image::imageops::FilterType::Lanczos3,
-            );
+    // Priority: gif_url > custom_image > emoji_image > text label
+    let image_rendered = if let Some(gif_url) = config.gif_url {
+        // GIF from URL - use animated frame if available
+        let mut frame_found = false;
 
-            let x_offset = (BUTTON_WIDTH - emoji_size) / 2;
-            let y_offset = (BUTTON_HEIGHT - emoji_size) / 2;
+        if let Some(btn_id) = button_id {
+            let animator = super::gif::animator();
+            let lock_result = animator.lock();
+            if let Ok(mut anim) = lock_result {
+                // Ensure animation is set up for this button
+                if !anim.has_animation(btn_id) {
+                    anim.set_button_gif(btn_id, gif_url);
+                }
 
-            // Overlay the emoji onto the button
-            for (x, y, pixel) in resized.enumerate_pixels() {
-                let dest_x = x + x_offset;
-                let dest_y = y + y_offset;
-                if dest_x < BUTTON_WIDTH && dest_y < BUTTON_HEIGHT {
-                    // Check if pixel is not fully transparent (assuming RGBA)
-                    if pixel[3] > 128 {
-                        img.put_pixel(dest_x, dest_y, Rgb([pixel[0], pixel[1], pixel[2]]));
-                    }
+                // Get current animation frame
+                if let Some(frame_img) = anim.get_current_frame(btn_id) {
+                    render_image_on_button(&mut img, frame_img);
+                    frame_found = true;
                 }
             }
         }
+
+        // Fallback to static first frame
+        if !frame_found {
+            if let Some(gif_img) = load_gif_image(gif_url) {
+                render_image_on_button(&mut img, &gif_img);
+                frame_found = true;
+            }
+        }
+
+        frame_found
+    } else if let Some(custom_image) = config.custom_image {
+        // Custom image from base64 data URL
+        if let Some(rgba_img) = super::emoji::load_base64_image(custom_image) {
+            render_image_on_button(&mut img, &rgba_img);
+            true
+        } else {
+            false
+        }
+    } else if let Some(emoji_ref) = config.emoji_image {
+        // Emoji from Twemoji
+        if let Some(emoji_img) = super::emoji::get_emoji_image(emoji_ref) {
+            render_image_on_button(&mut img, &emoji_img);
+            true
+        } else {
+            false
+        }
+    } else {
+        false
+    };
+
+    if !image_rendered {
+        // Render text label if no emoji image
+        let label = config.label;
+        let label_scale = if label.len() <= 4 {
+            20.0
+        } else if label.len() <= 6 {
+            16.0
+        } else {
+            13.0
+        };
+        let label_width = text_width(font, label, label_scale);
+        let label_x = ((BUTTON_WIDTH as i32 - label_width) / 2).max(2);
+        let label_y = (BUTTON_HEIGHT as i32 / 2) - (label_scale as i32 / 2);
+
+        // Draw text with slight shadow for depth
+        let text_color = if active { WHITE } else { Rgb([220, 220, 230]) };
+        draw_text(
+            &mut img,
+            font,
+            label,
+            label_x + 1,
+            label_y + 1,
+            label_scale,
+            Rgb([0, 0, 0]),
+        ); // shadow
+        draw_text(
+            &mut img,
+            font,
+            label,
+            label_x,
+            label_y,
+            label_scale,
+            text_color,
+        );
     }
 
     Ok(img)
-}
-
-/// Load an emoji image from assets
-fn load_emoji_image(name: &str) -> Option<image::RgbaImage> {
-    let path = format!("assets/emoji/{}.png", name);
-    image::open(&path).ok().map(|img| img.to_rgba8())
 }
 
 /// Render a MIC button with microphone icon
@@ -255,14 +469,14 @@ pub fn render_mic_button(
     font: &Font,
     active: bool,
     recording: bool,
-    button_id: u8,
+    colors: (Rgb<u8>, Rgb<u8>),
 ) -> Result<RgbImage> {
     let mut img = RgbImage::new(BUTTON_WIDTH, BUTTON_HEIGHT);
 
     let (base_color, bright_color) = if recording {
         (Rgb([180, 50, 50]), Rgb([220, 70, 70])) // Red when recording
     } else {
-        button_colors(button_id)
+        colors
     };
 
     // Fill with gradient background

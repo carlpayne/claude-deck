@@ -1,7 +1,7 @@
 //! System utilities for macOS integration
 
 use tokio::process::Command;
-use tracing::{trace, warn};
+use tracing::warn;
 
 /// Get the name of the currently focused application on macOS
 #[cfg(target_os = "macos")]
@@ -21,7 +21,6 @@ pub async fn get_focused_app() -> Option<String> {
 
     if output.status.success() {
         let app_name = String::from_utf8_lossy(&output.stdout).trim().to_string();
-        trace!("Focused app: {}", app_name);
         Some(app_name)
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -33,4 +32,20 @@ pub async fn get_focused_app() -> Option<String> {
 #[cfg(not(target_os = "macos"))]
 pub async fn get_focused_app() -> Option<String> {
     None
+}
+
+/// Check if the macOS screen is locked via IOConsoleLocked (~28ms)
+#[cfg(target_os = "macos")]
+pub async fn is_screen_locked() -> bool {
+    let output = Command::new("sh")
+        .args(["-c", "ioreg -n Root -d1 | grep -q '\"IOConsoleLocked\" = Yes'"])
+        .output()
+        .await;
+
+    matches!(output, Ok(o) if o.status.success())
+}
+
+#[cfg(not(target_os = "macos"))]
+pub async fn is_screen_locked() -> bool {
+    false
 }

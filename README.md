@@ -4,17 +4,20 @@ A hardware controller for [Claude Code](https://claude.ai/claude-code) using the
 with LCD buttons and rotary encoders.
 
 ![img.png](img.png)
+
 ## Features
 
-- **10 LCD buttons** with custom labels and color-coded functions
+- **10 LCD buttons** with custom labels, emojis, images, or animated GIFs
 - **4 rotary encoders** for scrolling, model selection, and navigation
 - **LCD strip** showing connection status, current model, task info, and mic status
+- **Web configuration UI** for customizing buttons and profiles
+- **Multi-app profiles** - automatically switches button layouts based on focused app
+- **Custom keyboard shortcuts** - configure any key with modifiers (⌘⇧⌥⌃)
 - **Voice dictation** integration via macOS dictation (double-tap Right Command)
 - **Claude Code hooks** for real-time status updates
-- **Multi-app support** - automatically switches button layouts based on focused app
-- **Slack mode** - emoji reaction shortcuts when Slack is focused
 - **Startup animation** - rainbow wave effect on device connect
 - **Auto-reconnect** - gracefully handles device disconnect/reconnect
+- **Lock screen detection** - automatically disables input when macOS is locked
 
 ## Requirements
 
@@ -50,7 +53,35 @@ cargo run -- --install-autostart
 cargo run -- --install-hooks
 ```
 
-## Button Layout
+## Web Configuration UI
+
+Claude Deck includes a built-in web server for configuring buttons and profiles.
+
+**Access the configuration UI at: http://localhost:9845**
+
+### Features
+
+- **Edit button appearance** - text labels, emojis, custom images, or animated GIFs
+- **GIF support** - paste any GIF URL or search Giphy directly (requires API key)
+- **Configure actions** - keyboard shortcuts, text input, emoji shortcodes, or built-in Claude actions
+- **Keyboard shortcuts** - any key with Mac modifiers (⌘ Command, ⇧ Shift, ⌥ Option, ⌃ Control)
+- **Auto-submit** - optionally press Enter after typing text/emoji
+- **Drag to reorder** - drag buttons to swap positions
+- **Copy buttons** - duplicate a button's config to another position
+- **Reset buttons** - click ✕ on any button to reset it, or reset entire profile to defaults
+- **Create profiles** - profiles for any installed macOS application
+- **Button tooltips** - hover over buttons to see what action they perform
+- **Live preview** - see changes reflected on the device immediately
+
+### Creating a Profile for a New App
+
+1. Open the web UI at http://localhost:9845
+2. Click **+ New Profile**
+3. Select an application from the dropdown (auto-detected from /Applications)
+4. Optionally copy buttons from an existing profile
+5. Customize buttons for your use case
+
+## Default Button Layout
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -74,7 +105,7 @@ cargo run -- --install-hooks
 
 ## Button Actions
 
-### Top Row
+### Top Row (Default Claude Profile)
 
 | Button     | Color | Action                                |
 |------------|-------|---------------------------------------|
@@ -84,57 +115,77 @@ cargo run -- --install-hooks
 | **RETRY**  | Gray  | Send Up + Enter (re-run last command) |
 | **REWIND** | Blue  | Send double Escape (dismiss/go back)  |
 
-### Bottom Row
+### Bottom Row (Default Claude Profile)
 
 | Button    | Color  | Short Press                         | Long Press (2s)                    |
-|-----------|--------|-------------------------------------|-------------------------------------|
-| **TRUST** | Green  | Send `2` (select "don't ask again") | -                                   |
-| **TAB**   | Blue   | Send Tab                            | Open new terminal with Claude Code  |
-| **MIC**   | Purple | Toggle voice dictation              | Clear current line (Ctrl+U)         |
-| **ENTER** | Blue   | Send Enter                          | -                                   |
-| **CLEAR** | Gray   | Send `/clear` + Enter               | -                                   |
+|-----------|--------|-------------------------------------|------------------------------------|
+| **TRUST** | Green  | Send `2` (select "don't ask again") | -                                  |
+| **TAB**   | Blue   | Send Tab                            | Open new terminal with Claude Code |
+| **MIC**   | Purple | Toggle voice dictation              | Clear current line (Ctrl+U)        |
+| **ENTER** | Blue   | Send Enter                          | -                                  |
+| **CLEAR** | Gray   | Send `/clear` + Enter               | -                                  |
+
+### Configurable Action Types
+
+| Action Type            | Description                                          | Example                           |
+|------------------------|------------------------------------------------------|-----------------------------------|
+| **Claude Code action** | Built-in actions (ACCEPT, REJECT, MIC, etc.)         | MIC, CLEAR, TRUST                 |
+| **Keyboard key**       | Single key or shortcut with modifiers                | `Cmd+R`, `Option+Cmd+Right`, `F5` |
+| **Type text**          | Types the specified text (+ optional auto-submit)    | `/help`, `git status`             |
+| **Emoji shortcode**    | Types Slack-style shortcode (+ optional auto-submit) | `:+1:`, `:tada:`                  |
 
 ## Encoder Actions
 
-| Encoder         | Rotate                          | Press                                           |
-|-----------------|---------------------------------|-------------------------------------------------|
-| **0** (Scroll)  | Page Up/Down                    | Replay startup animation                        |
-| **1** (Model)   | Cycle through opus/sonnet/haiku | Confirm model selection (sends `/model {name}`) |
-| **2** (History) | Navigate history (Up/Down)      | Select option (Enter)                           |
-| **3**           | -                               | Jump to bottom (End)                            |
+| Encoder             | Rotate                          | Press                                           |
+|---------------------|---------------------------------|-------------------------------------------------|
+| **0** (Brightness)  | Adjust brightness (±10%)        | Replay startup animation                        |
+| **1** (Model)       | Cycle through opus/sonnet/haiku | Confirm model selection (sends `/model {name}`) |
+| **2** (History)     | Navigate history (Up/Down)      | Select option (Enter)                           |
+| **3**               | -                               | Jump to bottom (End)                            |
 
 ## LCD Strip Panels
 
 The LCD strip shows 4 status panels:
 
-1. **STATUS** - Connection indicator (CONNECTED/OFFLINE)
+1. **STATUS** - Connection indicator (CONNECTED/OFFLINE/LOCKED)
 2. **MODEL** - Current model (OPUS/SONNET/HAIKU) with selection UI
 3. **TASK** - Current task name from Claude Code hooks
 4. **MIC** - Dictation status (READY/REC)
+
+When the macOS screen is locked, STATUS shows "LOCKED" and all button input is disabled for security.
 
 ## Multi-App Support
 
 The deck automatically detects which application is focused and switches button layouts accordingly.
 
-### Slack Mode
+### Built-in Profiles
 
-When Slack is the focused application, buttons switch to emoji reaction shortcuts:
+#### Claude Profile (Default)
+
+Matches all apps (`*`) - Standard Claude Code control buttons.
+
+#### Slack Profile
+
+When Slack is focused, buttons switch to emoji reaction shortcuts:
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
-│    [👍]      [👎]      [✅]      [👀]      [🎉]    Top Row  │
-│    :+1:     :-1:    :check:   :eyes:   :tada:              │
+│    [👍]      [👎]      [✅]      [👀]      [🎉]    Top Row │
+│    :+1:     :-1:    :check:   :eyes:   :tada:               │
 │                                                             │
-│    [❤️]      [😂]      [🔥]      [💯]      [🙏]  Bottom Row │
-│   :heart:   :joy:    :fire:    :100:   :pray:              │
+│    [❤️]      [😂]      [🔥]      [💯]      [🙏]  Bottom Row│
+│   :heart:   :joy:    :fire:    :100:   :pray:               │
 └─────────────────────────────────────────────────────────────┘
 ```
 
-Pressing a button types the corresponding Slack emoji shortcode (e.g., `:+1:`).
+### Custom App Profiles
 
-### Claude Mode (Default)
+Create profiles for any application via the web UI, e.g.:
 
-When any other application is focused (Terminal, VS Code, etc.), the standard Claude Code button layout is used.
+- **Google Chrome** - Tab navigation, refresh, dev tools
+- **VS Code** - Build, debug, git shortcuts
+- **Figma** - Zoom, tools, export
+- **Any app** - Customize buttons for your workflow
 
 ## Configuration
 
@@ -154,6 +205,21 @@ terminal = "Terminal"  # Or "iTerm"
 [models]
 available = ["opus", "sonnet", "haiku"]
 default = "opus"
+
+# Profiles are auto-generated and managed via web UI
+# You can also edit them manually:
+[[profiles]]
+name = "claude"
+match_apps = ["*"]
+
+[[profiles.buttons]]
+position = 0
+label = "ACCEPT"
+color = "#00C864"
+bright_color = "#32DC82"
+[profiles.buttons.action]
+type = "custom"
+value = "ACCEPT"
 ```
 
 ## CLI Options
@@ -221,6 +287,8 @@ claude-deck/
 │   ├── display/         # LCD rendering
 │   │   ├── renderer.rs  # Image rendering
 │   │   ├── buttons.rs   # Button image generation
+│   │   ├── emoji.rs     # Twemoji rendering
+│   │   ├── gif.rs       # GIF animation support
 │   │   └── strip.rs     # LCD strip panels
 │   ├── input/           # Input handling
 │   │   ├── handler.rs   # Event processing
@@ -230,12 +298,18 @@ claude-deck/
 │   ├── hooks/           # Claude Code integration
 │   │   └── status.rs    # Status file parsing
 │   ├── profiles/        # App-specific button profiles
-│   │   └── mod.rs       # Claude & Slack button configs
+│   │   ├── mod.rs       # Profile manager & defaults
+│   │   └── store.rs     # Profile serialization
+│   ├── web/             # Web configuration UI
+│   │   ├── server.rs    # Axum web server
+│   │   ├── handlers.rs  # API endpoints
+│   │   └── types.rs     # API types
 │   └── system/          # OS integration
 │       └── mod.rs       # Focused app detection (macOS)
 ├── assets/
 │   ├── fonts/           # Embedded fonts
-│   └── emoji/           # Emoji images for Slack mode
+│   ├── emoji/           # Twemoji images for button display
+│   └── web/             # Web UI (HTML, CSS, JS)
 ├── hooks/
 │   └── claude-deck-hook.sh  # Claude Code hook script
 └── Cargo.toml
@@ -248,6 +322,7 @@ claude-deck/
 - **image/imageproc** - Image rendering for LCD buttons
 - **rusttype** - Font rendering
 - **tokio** - Async runtime
+- **axum** - Web server for configuration UI
 - **tracing** - Logging
 
 ## License
@@ -258,3 +333,4 @@ MIT License - See [LICENSE](LICENSE) for details.
 
 - [mirajazz](https://crates.io/crates/mirajazz) - HID library for AJAZZ devices
 - [Claude Code](https://claude.ai/claude-code) - AI coding assistant by Anthropic
+- [Twemoji](https://twemoji.twitter.com/) - Emoji graphics for button display

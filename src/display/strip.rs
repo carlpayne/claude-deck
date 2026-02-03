@@ -58,7 +58,10 @@ fn render_status_button(img: &mut RgbImage, font: &Font, state: &AppState) {
     draw_filled_rect(img, 4, 4, STRIP_BUTTON_WIDTH - 8, 20, Rgb([30, 35, 45]));
     draw_text(img, font, "STATUS", 10, 6, 11.0, Rgb([120, 130, 150]));
 
-    let (status, color) = if state.connected {
+    // Show LOCKED status when screen is locked (input disabled)
+    let (status, color) = if state.screen_locked {
+        ("LOCKED", ORANGE)
+    } else if state.connected {
         ("CONNECTED", GREEN)
     } else {
         ("OFFLINE", RED)
@@ -69,9 +72,14 @@ fn render_status_button(img: &mut RgbImage, font: &Font, state: &AppState) {
     let x = ((STRIP_BUTTON_WIDTH as i32 - status_width) / 2).max(4);
     draw_text(img, font, status, x, 45, 15.0, color);
 
-    // Connection indicator dot
+    // Connection indicator dot (or lock symbol when locked)
     let dot_x = (STRIP_BUTTON_WIDTH as i32 / 2) - 8;
-    draw_text(img, font, "●", dot_x, 78, 24.0, color);
+    if state.screen_locked {
+        // Draw a simple lock symbol using ASCII
+        draw_text(img, font, "[X]", dot_x - 8, 78, 18.0, ORANGE);
+    } else {
+        draw_text(img, font, "●", dot_x, 78, 24.0, color);
+    }
 }
 
 /// Render model button (current model)

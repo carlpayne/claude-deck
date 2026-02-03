@@ -2,14 +2,14 @@ use anyhow::Result;
 use image::{Rgb, RgbImage};
 use rusttype::{Font, Scale};
 use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 use tracing::debug;
 
 use crate::config::Config;
-use crate::device::BUTTON_LABELS;
-use crate::profiles::{get_profile_for_app, AppProfile};
+use crate::profiles::ProfileManager;
 use crate::state::AppState;
 
-use super::buttons::{render_button_image, render_button_with_config};
+use super::buttons::render_button_with_config_and_id;
 use super::strip::render_strip_image;
 
 /// Color constants
@@ -54,10 +54,11 @@ pub struct DisplayRenderer {
     #[allow(dead_code)]
     config: Config,
     icon_cache: HashMap<String, RgbImage>,
+    profile_manager: Arc<RwLock<ProfileManager>>,
 }
 
 impl DisplayRenderer {
-    pub fn new(config: &Config) -> Result<Self> {
+    pub fn new(config: &Config, profile_manager: Arc<RwLock<ProfileManager>>) -> Result<Self> {
         // Load embedded font (or fall back to system font)
         let font_data = include_bytes!("../../assets/fonts/JetBrainsMono-Bold.ttf");
         let font = Font::try_from_bytes(font_data as &[u8])
@@ -67,37 +68,87 @@ impl DisplayRenderer {
             font,
             config: config.clone(),
             icon_cache: HashMap::new(),
+            profile_manager,
         })
     }
 
     /// Render a button image
     pub fn render_button(&self, button_id: u8, active: bool, state: &AppState) -> Result<RgbImage> {
-        // Get the current app profile
-        let profile = get_profile_for_app(&state.focused_app);
+        use crate::profiles::ButtonAction;
 
-        match profile {
-            AppProfile::Slack => {
-                // Use profile-specific button configuration
-                let config = profile.button_config(button_id);
-                render_button_with_config(&self.font, &config, active)
-            }
-            AppProfile::Claude => {
-                // Use default Claude mode rendering
-                let label = BUTTON_LABELS.get(button_id as usize).unwrap_or(&"?");
+        // If screen is locked, render dimmed/disabled button
+        if state.screen_locked {
+            return self.render_locked_button();
+        }
 
-                // MIC button (7) uses special icon rendering
-                if button_id == 7 {
-                    super::buttons::render_mic_button(
-                        &self.font,
-                        active,
-                        state.dictation_active,
-                        button_id,
-                    )
-                } else {
-                    render_button_image(&self.font, label, active, button_id)
-                }
+        // Get button config from profile manager (uses configurable profiles)
+        let button_config = {
+            let manager = self.profile_manager.read().unwrap();
+            manager.get_button_config(&state.focused_app, button_id)
+        };
+
+        // Check if this button has MIC action - needs special rendering with mic icon
+        if matches!(&button_config.action, ButtonAction::Custom(action) if *action == "MIC") {
+            return super::buttons::render_mic_button(
+                &self.font,
+                active,
+                state.dictation_active,
+                button_config.colors,
+            );
+        }
+
+        // Use the profile-specific button configuration (with button_id for GIF animation)
+        render_button_with_config_and_id(&self.font, &button_config, active, Some(button_id))
+    }
+
+    /// Render a locked/disabled button (shown when screen is locked)
+    fn render_locked_button(&self) -> Result<RgbImage> {
+        use crate::device::{BUTTON_HEIGHT, BUTTON_WIDTH};
+
+        let mut img = RgbImage::new(BUTTON_WIDTH, BUTTON_HEIGHT);
+
+        // Dark gray background
+        let dark = Rgb([25, 25, 30]);
+        let darker = Rgb([15, 15, 18]);
+        for y in 0..BUTTON_HEIGHT {
+            let t = y as f32 / BUTTON_HEIGHT as f32;
+            let r = (dark[0] as f32 * (1.0 - t) + darker[0] as f32 * t) as u8;
+            let g = (dark[1] as f32 * (1.0 - t) + darker[1] as f32 * t) as u8;
+            let b = (dark[2] as f32 * (1.0 - t) + darker[2] as f32 * t) as u8;
+            for x in 0..BUTTON_WIDTH {
+                img.put_pixel(x, y, Rgb([r, g, b]));
             }
         }
+
+        // Subtle border
+        let border = Rgb([40, 40, 48]);
+        for x in 0..BUTTON_WIDTH {
+            img.put_pixel(x, 0, border);
+            img.put_pixel(x, BUTTON_HEIGHT - 1, border);
+        }
+        for y in 0..BUTTON_HEIGHT {
+            img.put_pixel(0, y, border);
+            img.put_pixel(BUTTON_WIDTH - 1, y, border);
+        }
+
+        Ok(img)
+    }
+
+    /// Render a button with a pre-provided GIF frame (avoids animator lock)
+    pub fn render_button_with_gif_frame(
+        &self,
+        button_id: u8,
+        state: &AppState,
+        gif_frame: &std::sync::Arc<image::RgbaImage>,
+    ) -> Result<RgbImage> {
+        // Get button config from profile manager
+        let button_config = {
+            let manager = self.profile_manager.read().unwrap();
+            manager.get_button_config(&state.focused_app, button_id)
+        };
+
+        // Render using the provided frame (deref Arc to get &RgbaImage)
+        super::buttons::render_button_with_gif_frame(&self.font, &button_config, gif_frame.as_ref())
     }
 
     /// Render a solid colored button (for animations)

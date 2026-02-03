@@ -37,6 +37,24 @@ thiserror = "1"
 # System/Unix
 libc = "0.2"
 
+# Web UI
+axum = "0.8"
+tower-http = { version = "0.6", features = ["cors"] }
+rust-embed = "8"
+mime_guess = "2"
+
+# HTTP client for emoji fetching
+ureq = "2"
+
+# Base64 for custom image decoding
+base64 = "0.22"
+
+# Async HTTP client for Giphy API
+reqwest = { version = "0.12", features = ["json"] }
+
+# URL encoding
+urlencoding = "2"
+
 [profile.release]
 strip = true
 lto = true
