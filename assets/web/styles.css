@@ -147,13 +147,13 @@ main {
     background: var(--bg-secondary);
     border: 1px solid var(--border-color);
     border-radius: var(--border-radius);
-    padding: 24px;
+    padding: 32px;
 }
 
 .button-row {
     display: flex;
-    gap: 8px;
-    margin-bottom: 8px;
+    gap: 12px;
+    margin-bottom: 12px;
     justify-content: center;
 }
 
@@ -162,11 +162,11 @@ main {
 }
 
 .button-cell {
-    /* Match device button proportions (112x112 pixels on device) */
-    width: 90px;
-    height: 90px;
-    min-width: 90px;
-    min-height: 90px;
+    /* Larger tiles for better use of space */
+    width: 112px;
+    height: 112px;
+    min-width: 112px;
+    min-height: 112px;
     background: linear-gradient(180deg, var(--bg-tertiary) 0%, var(--bg-secondary) 100%);
     border: 2px solid var(--border-color);
     border-radius: 8px;
@@ -191,24 +191,25 @@ main {
 }
 
 .button-cell .button-label {
-    font-size: 10px;
+    font-size: 13px;
     font-weight: 700;
     color: var(--text-primary);
     text-align: center;
     word-break: break-word;
-    padding: 2px;
-    text-shadow: 1px 1px 1px rgba(0, 0, 0, 0.5);
+    padding: 4px;
+    text-shadow: 1px 1px 2px rgba(0, 0, 0, 0.6);
 }
 
 .button-cell .button-emoji {
-    font-size: 52px;
+    font-size: 64px;
     line-height: 1;
 }
 
 .button-cell .button-image {
-    width: 72px;
-    height: 72px;
-    object-fit: contain;
+    width: 96px;
+    height: 96px;
+    object-fit: cover;
+    border-radius: 4px;
 }
 
 .button-cell .button-position {
