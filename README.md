@@ -55,6 +55,8 @@ cargo run -- --install-hooks
 
 ## Web Configuration UI
 
+![img_1.png](img_1.png)
+
 Claude Deck includes a built-in web server for configuring buttons and profiles.
 
 **Access the configuration UI at: http://localhost:9845**
