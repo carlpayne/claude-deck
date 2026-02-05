@@ -3,8 +3,7 @@ use image::{Rgb, RgbImage};
 use rusttype::Font;
 
 use super::renderer::{
-    draw_filled_rect, draw_text, fill_rect, text_width, BLUE, BRIGHT_PURPLE, DARK_BG, GRAY, GREEN,
-    ORANGE, RED, WHITE,
+    draw_filled_rect, draw_text, text_width, BLUE, BRIGHT_PURPLE, GRAY, GREEN, ORANGE, RED, WHITE,
 };
 use crate::device::{STRIP_BUTTON_HEIGHT, STRIP_BUTTON_WIDTH, STRIP_HEIGHT, STRIP_WIDTH};
 use crate::state::AppState;
@@ -211,118 +210,226 @@ fn draw_strip_button_border(img: &mut RgbImage, highlight: Rgb<u8>, shadow: Rgb<
     }
 }
 
-/// Render the LCD strip with status information
+/// Debug: draw outline box (keep for future debugging)
+#[allow(dead_code)]
+fn draw_debug_box(img: &mut RgbImage, x: u32, y: u32, w: u32, h: u32, color: Rgb<u8>) {
+    // Top and bottom edges
+    for px in x..(x + w).min(img.width()) {
+        if y < img.height() {
+            img.put_pixel(px, y, color);
+        }
+        if y + h - 1 < img.height() {
+            img.put_pixel(px, y + h - 1, color);
+        }
+    }
+    // Left and right edges
+    for py in y..(y + h).min(img.height()) {
+        if x < img.width() {
+            img.put_pixel(x, py, color);
+        }
+        if x + w - 1 < img.width() {
+            img.put_pixel(x + w - 1, py, color);
+        }
+    }
+}
+
+// Layout constants for 4-quadrant design
+const QUAD_WIDTH: i32 = 400;   // Half of 800
+const QUAD_HEIGHT: i32 = 64;   // Half of 128
+const LABEL_SIZE: f32 = 14.0;  // Consistent label size
+const VALUE_SIZE: f32 = 24.0;  // Consistent value size
+const PADDING: i32 = 15;       // Edge padding
+
+/// Render the LCD strip with status information (800x128)
 pub fn render_strip_image(font: &Font, state: &AppState) -> Result<RgbImage> {
     let mut img = RgbImage::new(STRIP_WIDTH, STRIP_HEIGHT);
 
-    // Fill background
-    fill_rect(&mut img, DARK_BG);
+    // Fill background with subtle gradient
+    fill_gradient_vertical(&mut img, Rgb([18, 20, 28]), Rgb([12, 14, 20]));
 
-    // Draw top section: Task name and progress
-    draw_task_section(&mut img, font, state);
+    // Draw horizontal separator
+    draw_separator(&mut img, QUAD_HEIGHT as u32);
 
-    // Draw bottom section: Model and YOLO indicator
-    draw_status_section(&mut img, font, state);
+    // Draw vertical separator
+    draw_vertical_separator(&mut img, QUAD_WIDTH as u32);
 
-    // Draw separator line
-    draw_separator(&mut img, 64);
+    // Four quadrants:
+    // Top-left: Task name
+    draw_quadrant_task(&mut img, font, state);
+    // Top-right: Tool detail
+    draw_quadrant_detail(&mut img, font, state);
+    // Bottom-left: Model
+    draw_quadrant_model(&mut img, font, state);
+    // Bottom-right: Status
+    draw_quadrant_status(&mut img, font, state);
 
     Ok(img)
 }
 
-/// Draw the task name and tool detail
-fn draw_task_section(img: &mut RgbImage, font: &Font, state: &AppState) {
-    let y_offset = 12;
+/// Draw vertical separator line
+fn draw_vertical_separator(img: &mut RgbImage, x: u32) {
+    let color = Rgb([45, 50, 65]);
+    for y in 10..(STRIP_HEIGHT - 10) {
+        img.put_pixel(x, y, color);
+        img.put_pixel(x + 1, y, Rgb([25, 28, 38])); // Shadow
+    }
+}
 
-    // Task label
-    draw_text(img, font, "TASK:", 10, y_offset, 14.0, GRAY);
+/// Top-left quadrant: Task name
+fn draw_quadrant_task(img: &mut RgbImage, font: &Font, state: &AppState) {
+    let x = PADDING;
+    let y_label = 8;
+    let y_value = 28;
+    let max_width = QUAD_WIDTH - PADDING * 2 - 10;
 
-    // Task name
+    // Label
+    draw_text(img, font, "TASK", x, y_label, LABEL_SIZE, GRAY);
+
+    // Value with color based on state
     let task_color = if state.task_name == "ERROR" || state.task_name == "RATE LIMITED" {
         RED
     } else if state.waiting_for_input {
-        Rgb([255, 200, 0]) // Yellow for waiting
+        ORANGE
+    } else if state.task_name == "THINKING" {
+        BRIGHT_PURPLE
+    } else if state.task_name == "READY" {
+        GREEN
     } else {
         WHITE
     };
-    draw_text(img, font, &state.task_name, 70, y_offset, 14.0, task_color);
 
-    // Tool detail if available
+    let task_display = truncate_text(font, &state.task_name, VALUE_SIZE, max_width);
+    draw_text(img, font, &task_display, x, y_value, VALUE_SIZE, task_color);
+}
+
+/// Top-right quadrant: Tool detail
+fn draw_quadrant_detail(img: &mut RgbImage, font: &Font, state: &AppState) {
+    let x = QUAD_WIDTH + PADDING;
+    let y_label = 8;
+    let y_value = 28;
+    // Full width available for detail text (less padding)
+    let max_width = QUAD_WIDTH - PADDING - 5;
+
+    // Label
+    draw_text(img, font, "DETAIL", x, y_label, LABEL_SIZE, GRAY);
+
+    // Value
     if let Some(ref detail) = state.tool_detail {
-        draw_text(img, font, detail, 200, y_offset, 12.0, GRAY);
+        let detail_display = truncate_text_path(font, detail, VALUE_SIZE, max_width);
+        draw_text(img, font, &detail_display, x, y_value, VALUE_SIZE, WHITE);
+    } else {
+        draw_text(img, font, "-", x, y_value, VALUE_SIZE, GRAY);
     }
 }
 
-/// Draw the model selector and YOLO indicator
-fn draw_status_section(img: &mut RgbImage, font: &Font, state: &AppState) {
-    let y_offset = 85;
+/// Bottom-left quadrant: Model
+fn draw_quadrant_model(img: &mut RgbImage, font: &Font, state: &AppState) {
+    let x = PADDING;
+    let y_label = QUAD_HEIGHT + 6;
+    let y_value = QUAD_HEIGHT + 26;
 
     if state.model_selecting {
-        // Show model selector with all options
-        draw_model_selector(img, font, state, y_offset);
+        draw_text(img, font, "SELECT MODEL", x, y_label, LABEL_SIZE, GRAY);
+        draw_model_selector_compact(img, font, state, x, y_value);
     } else {
-        // Show current model
-        draw_text(img, font, "MODEL:", 10, y_offset, 14.0, GRAY);
-        draw_text(
-            img,
-            font,
-            &state.model.to_uppercase(),
-            85,
-            y_offset,
-            14.0,
-            GREEN,
-        );
+        draw_text(img, font, "MODEL", x, y_label, LABEL_SIZE, GRAY);
+        draw_text(img, font, &state.model.to_uppercase(), x, y_value, VALUE_SIZE, BLUE);
     }
-
-    // Connection indicator
-    let conn_text = if state.connected { "●" } else { "○" };
-    let conn_color = if state.connected { GREEN } else { GRAY };
-    draw_text(
-        img,
-        font,
-        conn_text,
-        STRIP_WIDTH as i32 - 25,
-        12,
-        14.0,
-        conn_color,
-    );
 }
 
-/// Draw model selector with visual indicator
-fn draw_model_selector(img: &mut RgbImage, font: &Font, state: &AppState, y: i32) {
-    let mut x = 10;
-    let scale = 14.0;
+/// Bottom-right quadrant: Status/hints
+fn draw_quadrant_status(img: &mut RgbImage, font: &Font, state: &AppState) {
+    let x = QUAD_WIDTH + PADDING;
+    let y_label = QUAD_HEIGHT + 6;
+    let y_value = QUAD_HEIGHT + 26;
+
+    // Label
+    draw_text(img, font, "STATUS", x, y_label, LABEL_SIZE, GRAY);
+
+    // Status value
+    let (status_text, status_color) = if state.screen_locked {
+        ("LOCKED", ORANGE)
+    } else if state.model_selecting {
+        ("rotate to select", GRAY)
+    } else if state.waiting_for_input {
+        ("WAITING FOR INPUT", ORANGE)
+    } else if state.connected {
+        ("CONNECTED", GREEN)
+    } else {
+        ("OFFLINE", RED)
+    };
+
+    draw_text(img, font, status_text, x, y_value, VALUE_SIZE, status_color);
+}
+
+/// Compact model selector for bottom-left quadrant
+fn draw_model_selector_compact(img: &mut RgbImage, font: &Font, state: &AppState, start_x: i32, y: i32) {
+    let mut x = start_x;
+    let scale = 18.0;
+    let spacing = 15;
+    let max_x = QUAD_WIDTH - PADDING;
 
     for (i, model) in state.available_models.iter().enumerate() {
         let is_selected = i == state.model_index;
-        let prefix = if is_selected { "●" } else { "○" };
         let color = if is_selected { GREEN } else { GRAY };
+        let model_upper = model.to_uppercase();
+        let model_width = text_width(font, &model_upper, scale);
 
-        let text = format!("{} {}", prefix, model);
-        draw_text(img, font, &text, x, y, scale, color);
+        if x + model_width > max_x {
+            break;
+        }
 
-        x += text_width(font, &text, scale) + 20;
+        if is_selected {
+            draw_filled_rect(img, x as u32 - 3, y as u32 - 2, model_width as u32 + 6, 24, Rgb([30, 50, 40]));
+        }
+
+        draw_text(img, font, &model_upper, x, y, scale, color);
+        x += model_width + spacing;
     }
-
-    // Draw hint text
-    let hint = "← rotate | press to confirm →";
-    let hint_width = text_width(font, hint, 10.0);
-    draw_text(
-        img,
-        font,
-        hint,
-        STRIP_WIDTH as i32 - hint_width - 10,
-        y + 20,
-        10.0,
-        GRAY,
-    );
 }
 
-/// Draw a separator line
+/// Truncate text to fit width, adding ".." if needed
+fn truncate_text(font: &Font, text: &str, scale: f32, max_width: i32) -> String {
+    let mut display = text.to_string();
+    while text_width(font, &display, scale) > max_width && display.len() > 3 {
+        display.pop();
+    }
+    if display.len() < text.len() {
+        if display.len() > 2 {
+            display.pop();
+            display.pop();
+        }
+        display.push_str("..");
+    }
+    display
+}
+
+/// Truncate path, keeping filename visible
+fn truncate_text_path(font: &Font, text: &str, scale: f32, max_width: i32) -> String {
+    if text_width(font, text, scale) <= max_width {
+        return text.to_string();
+    }
+
+    // For paths, try to show the end (filename)
+    if let Some(idx) = text.rfind('/') {
+        let filename = &text[idx..];
+        if text_width(font, filename, scale) <= max_width {
+            let prefix = format!("..{}", filename);
+            if text_width(font, &prefix, scale) <= max_width {
+                return prefix;
+            }
+        }
+    }
+
+    truncate_text(font, text, scale, max_width)
+}
+
+/// Draw a horizontal separator line
 fn draw_separator(img: &mut RgbImage, y: u32) {
-    let color = Rgb([40, 40, 60]);
-    for x in 10..(STRIP_WIDTH - 10) {
+    let color = Rgb([45, 50, 65]);
+    for x in 15..(STRIP_WIDTH - 15) {
         img.put_pixel(x, y, color);
+        img.put_pixel(x, y + 1, Rgb([25, 28, 38])); // Shadow
     }
 }
 

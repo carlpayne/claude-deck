@@ -134,13 +134,9 @@ impl App {
         device.flush().await?;
         tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
 
-        // Render LCD strip as 4 individual status panels
-        for strip_button_id in 0..4u8 {
-            let strip_image = self.display.render_strip_button(strip_button_id, &state)?;
-            device
-                .set_strip_button_image(strip_button_id, &strip_image)
-                .await?;
-        }
+        // Render full LCD strip (800x128 continuous display)
+        let strip_image = self.display.render_strip(&state)?;
+        device.set_strip_image(strip_image).await?;
         drop(state);
 
         info!("Flushing strip images...");
@@ -226,7 +222,7 @@ impl App {
         let keepalive_interval = std::time::Duration::from_secs(10);
 
         let mut last_status_check = std::time::Instant::now();
-        let status_check_interval = std::time::Duration::from_millis(500);
+        let status_check_interval = std::time::Duration::from_millis(200);
 
         let mut last_app_check = std::time::Instant::now();
         let app_check_interval = std::time::Duration::from_millis(500);
@@ -451,13 +447,9 @@ impl App {
 
         let state = self.state.read().await;
 
-        // Update LCD strip panels
-        for strip_button_id in 0..4u8 {
-            let strip_image = self.display.render_strip_button(strip_button_id, &state)?;
-            device
-                .set_strip_button_image(strip_button_id, &strip_image)
-                .await?;
-        }
+        // Update full LCD strip (800x128 continuous display)
+        let strip_image = self.display.render_strip(&state)?;
+        device.set_strip_image(strip_image).await?;
 
         // Update all MIC buttons (shows red when recording, flashes on long-press)
         for mic_button_id in self.find_mic_buttons(&state) {
@@ -613,7 +605,26 @@ impl App {
             return Ok(changed);
         }
 
+        // Even if no status file, check Claude settings for model changes
+        if let Some(model) = Self::read_claude_settings_model().await {
+            let mut state = self.state.write().await;
+            if !state.model_selecting && state.model != model {
+                state.set_model(&model);
+                return Ok(true);
+            }
+        }
+
         Ok(false)
+    }
+
+    /// Read model directly from Claude Code settings.json
+    async fn read_claude_settings_model() -> Option<String> {
+        let home = std::env::var("HOME").ok()?;
+        let settings_path = std::path::PathBuf::from(home).join(".claude/settings.json");
+
+        let content = tokio::fs::read_to_string(&settings_path).await.ok()?;
+        let json: serde_json::Value = serde_json::from_str(&content).ok()?;
+        json.get("model")?.as_str().map(|s| s.to_string())
     }
 
     /// Update GIF animations and redraw changed buttons

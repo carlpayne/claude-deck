@@ -70,6 +70,7 @@ pub async fn start_server(
         .route("/colors", get(handlers::get_colors))
         .route("/actions", get(handlers::get_actions))
         .route("/giphy/search", get(handlers::search_giphy))
+        .route("/status", get(handlers::get_status))
         .with_state(app_state);
 
     // Static file fallback handler

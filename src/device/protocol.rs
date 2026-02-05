@@ -14,12 +14,13 @@
 pub const BUTTON_WIDTH: u32 = 112;
 pub const BUTTON_HEIGHT: u32 = 112;
 
-/// LCD strip soft button dimensions (trying 112x112 like square buttons)
+/// LCD strip soft button dimensions (legacy - for individual button mode)
 pub const STRIP_BUTTON_WIDTH: u32 = 112;
 pub const STRIP_BUTTON_HEIGHT: u32 = 112;
 
-/// Legacy LCD strip dimensions (for compatibility)
-pub const STRIP_WIDTH: u32 = 480;
+/// Full LCD strip dimensions (for continuous display mode)
+/// 800x128 fills the entire strip width without gaps
+pub const STRIP_WIDTH: u32 = 800;
 pub const STRIP_HEIGHT: u32 = 128;
 
 /// Number of LCD buttons (N4 has 10 square + 4 strip = 14 addressable displays)

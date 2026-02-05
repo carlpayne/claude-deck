@@ -682,6 +682,29 @@ pub async fn search_giphy(
     }
 }
 
+/// GET /api/status - Get current Claude status from state file
+pub async fn get_status() -> Json<ApiResponse<serde_json::Value>> {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let state_path = std::path::PathBuf::from(home).join(".claude-deck/state.json");
+
+    match std::fs::read_to_string(&state_path) {
+        Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
+            Ok(state) => Json(ApiResponse::ok(state)),
+            Err(e) => Json(ApiResponse::error(format!("Failed to parse state: {}", e))),
+        },
+        Err(_) => {
+            // Return default state if file doesn't exist
+            Json(ApiResponse::ok(serde_json::json!({
+                "task": "READY",
+                "tool_detail": null,
+                "waiting_for_input": false,
+                "model": "unknown",
+                "connected": false
+            })))
+        }
+    }
+}
+
 /// Parse Giphy API response into our GiphyGif format
 fn parse_giphy_response(json: &serde_json::Value) -> Vec<GiphyGif> {
     let mut gifs = Vec::new();

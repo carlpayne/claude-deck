@@ -146,7 +146,7 @@ impl DeviceManager {
         Ok(())
     }
 
-    /// Set LCD strip soft button image (112x112 RGB)
+    /// Set LCD strip soft button image (112x112 RGB) - legacy individual button mode
     /// Strip buttons use display indices 0-3
     pub async fn set_strip_button_image(&self, button: u8, image: &RgbImage) -> Result<()> {
         if button >= STRIP_BUTTON_COUNT {
@@ -171,6 +171,31 @@ impl DeviceManager {
             )
             .await
             .map_err(|e| anyhow!("Failed to set strip button image: {}", e))?;
+
+        Ok(())
+    }
+
+    /// Get image format for full LCD strip (800x128 JPEG)
+    fn full_strip_image_format() -> ImageFormat {
+        ImageFormat {
+            mode: ImageMode::JPEG,
+            size: (STRIP_WIDTH as usize, STRIP_HEIGHT as usize),
+            rotation: ImageRotation::Rot180,
+            mirror: ImageMirroring::None,
+        }
+    }
+
+    /// Set full LCD strip image (800x128 RGB) - continuous display mode
+    /// Sends a single wide image that fills the entire strip without gaps
+    pub async fn set_strip_image(&self, image: RgbImage) -> Result<()> {
+        debug!("Setting full strip image ({}x{})", image.width(), image.height());
+
+        let dynamic_image = DynamicImage::ImageRgb8(image);
+
+        self.device
+            .set_button_image(0, Self::full_strip_image_format(), dynamic_image)
+            .await
+            .map_err(|e| anyhow!("Failed to set strip image: {}", e))?;
 
         Ok(())
     }

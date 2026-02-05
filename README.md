@@ -3,7 +3,7 @@
 A hardware controller for [Claude Code](https://claude.ai/claude-code) using the AJAZZ AKP05E / Mirabox N4 macro pad
 with LCD buttons and rotary encoders.
 
-![img.png](img.png)
+![img.jpeg](img.jpeg)
 
 ## Features
 
@@ -63,6 +63,8 @@ Claude Deck includes a built-in web server for configuring buttons and profiles.
 
 ### Features
 
+- **Device preview** - interactive mockup showing buttons, LCD strip status, and encoder knobs
+- **Live LCD status** - real-time display of task, detail, model, and connection status
 - **Edit button appearance** - text labels, emojis, custom images, or animated GIFs
 - **GIF support** - paste any GIF URL or search Giphy directly (requires API key)
 - **Configure actions** - keyboard shortcuts, text input, emoji shortcodes, or built-in Claude actions
@@ -100,8 +102,11 @@ Claude Deck includes a built-in web server for configuring buttons and profiles.
 └─────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────┐
-│  [STATUS]    [MODEL]     [TASK]      [MIC]     LCD Strip    │
-│  Connected   OPUS        READY       READY                  │
+│  TASK            │  DETAIL                    LCD Strip     │
+│  Bash            │  running tests...                        │
+├──────────────────┼──────────────────────────────────────────│
+│  MODEL           │  STATUS                                  │
+│  OPUS            │  CONNECTED                               │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -147,12 +152,14 @@ Claude Deck includes a built-in web server for configuring buttons and profiles.
 
 ## LCD Strip Panels
 
-The LCD strip shows 4 status panels:
+The LCD strip shows 4 status quadrants:
 
-1. **STATUS** - Connection indicator (CONNECTED/OFFLINE/LOCKED)
-2. **MODEL** - Current model (OPUS/SONNET/HAIKU) with selection UI
-3. **TASK** - Current task name from Claude Code hooks
-4. **MIC** - Dictation status (READY/REC)
+| Quadrant   | Description                                              |
+|------------|----------------------------------------------------------|
+| **TASK**   | Current task name from Claude Code hooks (e.g., "Bash", "Thinking") |
+| **DETAIL** | Additional context - tool being used, file path, etc.    |
+| **MODEL**  | Current model (OPUS/SONNET/HAIKU) with selection UI      |
+| **STATUS** | Connection indicator (CONNECTED/OFFLINE/LOCKED)          |
 
 When the macOS screen is locked, STATUS shows "LOCKED" and all button input is disabled for security.
 

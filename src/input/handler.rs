@@ -32,6 +32,7 @@ pub struct InputHandler {
     button_press_times: HashMap<u8, Instant>,
     long_press_fired: HashSet<u8>,
     dictation_state: DictationState,
+    last_encoder_press: HashMap<u8, Instant>,
 }
 
 /// Tracks dictation state
@@ -52,6 +53,7 @@ impl InputHandler {
                 active: false,
                 first_use: true,
             },
+            last_encoder_press: HashMap::new(),
         }
     }
 
@@ -232,8 +234,18 @@ impl InputHandler {
         Ok(())
     }
 
-    /// Handle encoder press
+    /// Handle encoder press (with debouncing)
     async fn handle_encoder_press(&mut self, encoder: u8) -> Result<()> {
+        // Debounce: ignore if pressed within last 300ms
+        let now = Instant::now();
+        if let Some(last) = self.last_encoder_press.get(&encoder) {
+            if now.duration_since(*last) < Duration::from_millis(300) {
+                debug!("Encoder {} press ignored (debounce)", encoder);
+                return Ok(());
+            }
+        }
+        self.last_encoder_press.insert(encoder, now);
+
         debug!("Encoder {} pressed", encoder);
 
         match encoder {
@@ -422,14 +434,25 @@ impl InputHandler {
 
     async fn confirm_model(&mut self) {
         debug!("confirm_model: starting");
-        let model = {
+
+        // Only act if actually in model selection mode
+        let (was_selecting, model) = {
             let mut state = self.state.write().await;
-            state.confirm_model();
-            state.model.clone()
+            let was_selecting = state.model_selecting;
+            if was_selecting {
+                state.confirm_model();
+            }
+            (was_selecting, state.model.clone())
         };
 
-        info!("Switching to model: {}", model);
-        self.send_text(&format!("/model {}", model));
-        self.send_key(&Key::Enter);
+        if was_selecting {
+            info!("Switching to model: {}", model);
+            self.send_text(&format!("/model {}", model));
+            // Delay to ensure text is fully processed by the system before Enter
+            sleep(Duration::from_millis(150)).await;
+            self.send_key(&Key::Enter);
+        } else {
+            debug!("confirm_model: not in selection mode, ignoring");
+        }
     }
 }

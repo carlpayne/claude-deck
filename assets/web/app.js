@@ -19,6 +19,10 @@ const elements = {
     connectionStatus: document.getElementById('connection-status'),
     profileTabs: document.getElementById('profile-tabs'),
     buttonGrid: document.getElementById('button-grid'),
+    lcdTask: document.getElementById('lcd-task'),
+    lcdDetail: document.getElementById('lcd-detail'),
+    lcdModel: document.getElementById('lcd-model'),
+    lcdStatus: document.getElementById('lcd-status'),
     editorForm: document.getElementById('editor-form'),
     editorHint: document.querySelector('.editor-hint'),
     colorPresets: document.getElementById('color-presets'),
@@ -83,10 +87,61 @@ async function init() {
         ]);
         setConnected(true);
         setupEventListeners();
+        startStatusPolling();
     } catch (error) {
         console.error('Failed to initialize:', error);
         setConnected(false, error.message);
     }
+}
+
+// LCD Status Polling
+let statusPollInterval = null;
+
+function startStatusPolling() {
+    // Poll immediately, then every 500ms
+    pollStatus();
+    statusPollInterval = setInterval(pollStatus, 500);
+}
+
+async function pollStatus() {
+    try {
+        const status = await api('/status');
+        updateLcdDisplay(status);
+    } catch (error) {
+        // Silently fail - status endpoint might not be available
+    }
+}
+
+function updateLcdDisplay(status) {
+    // Task
+    const task = status.task || 'READY';
+    elements.lcdTask.textContent = task;
+    elements.lcdTask.className = 'lcd-value';
+    if (task === 'THINKING') elements.lcdTask.classList.add('thinking');
+    else if (task === 'ERROR' || task === 'RATE LIMITED') elements.lcdTask.classList.add('error');
+    else if (status.waiting_for_input) elements.lcdTask.classList.add('waiting');
+
+    // Detail
+    elements.lcdDetail.textContent = status.tool_detail || '-';
+
+    // Model
+    elements.lcdModel.textContent = (status.model || 'unknown').toUpperCase();
+
+    // Status
+    let statusText = 'OFFLINE';
+    let statusClass = 'offline';
+    if (status.waiting_for_input) {
+        statusText = 'WAITING FOR INPUT';
+        statusClass = 'waiting';
+    } else if (status.processing || status.task !== 'READY') {
+        statusText = 'CONNECTED';
+        statusClass = 'connected';
+    } else if (status.timestamp && (Date.now() / 1000 - status.timestamp) < 30) {
+        statusText = 'CONNECTED';
+        statusClass = 'connected';
+    }
+    elements.lcdStatus.textContent = statusText;
+    elements.lcdStatus.className = 'lcd-value ' + statusClass;
 }
 
 // API Functions

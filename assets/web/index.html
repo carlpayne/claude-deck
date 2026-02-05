@@ -34,9 +34,42 @@
         </div>
 
         <main>
-            <section class="button-grid" id="button-grid">
-                <!-- 2x5 button grid populated by JS -->
-            </section>
+            <!-- Device Preview - mimics physical device proportions -->
+            <div class="device-frame">
+                <div class="device-body">
+                    <section class="button-grid" id="button-grid">
+                        <!-- 2x5 button grid populated by JS -->
+                    </section>
+
+                    <!-- LCD Strip Status Display (below buttons like physical device) -->
+                    <section class="lcd-strip" id="lcd-strip">
+                        <div class="lcd-quadrant lcd-task">
+                            <span class="lcd-label">TASK</span>
+                            <span class="lcd-value" id="lcd-task">READY</span>
+                        </div>
+                        <div class="lcd-quadrant lcd-detail">
+                            <span class="lcd-label">DETAIL</span>
+                            <span class="lcd-value" id="lcd-detail">-</span>
+                        </div>
+                        <div class="lcd-quadrant lcd-model">
+                            <span class="lcd-label">MODEL</span>
+                            <span class="lcd-value" id="lcd-model">-</span>
+                        </div>
+                        <div class="lcd-quadrant lcd-status">
+                            <span class="lcd-label">STATUS</span>
+                            <span class="lcd-value" id="lcd-status">OFFLINE</span>
+                        </div>
+                    </section>
+                </div>
+
+                <!-- Encoder knobs (visual only) -->
+                <div class="encoder-row">
+                    <div class="encoder-knob"></div>
+                    <div class="encoder-knob"></div>
+                    <div class="encoder-knob"></div>
+                    <div class="encoder-knob"></div>
+                </div>
+            </div>
 
             <aside class="button-editor" id="button-editor">
                 <h2>Button Editor</h2>

@@ -26,26 +26,39 @@ if command -v jq &> /dev/null; then
                 ;;
             "Bash")
                 # Get first 30 chars of command
-                TOOL_DETAIL=$(echo "$INPUT" | jq -r '.tool_input.command // empty' | head -c 30)
+                TOOL_DETAIL=$(echo "$INPUT" | jq -r '.tool_input.command // empty' | head -c 100)
                 ;;
             "Grep"|"Glob")
-                TOOL_DETAIL=$(echo "$INPUT" | jq -r '.tool_input.pattern // empty' | head -c 20)
+                TOOL_DETAIL=$(echo "$INPUT" | jq -r '.tool_input.pattern // empty' | head -c 80)
                 ;;
             "Task")
-                TOOL_DETAIL=$(echo "$INPUT" | jq -r '.tool_input.description // empty' | head -c 20)
+                TOOL_DETAIL=$(echo "$INPUT" | jq -r '.tool_input.description // empty' | head -c 80)
                 ;;
             "WebFetch"|"WebSearch")
-                TOOL_DETAIL=$(echo "$INPUT" | jq -r '.tool_input.url // .tool_input.query // empty' | head -c 25)
+                TOOL_DETAIL=$(echo "$INPUT" | jq -r '.tool_input.url // .tool_input.query // empty' | head -c 80)
                 ;;
         esac
     fi
 
-    # Read model from Claude Code settings
-    SETTINGS_FILE="$HOME/.claude/settings.json"
-    if [ -f "$SETTINGS_FILE" ]; then
-        MODEL=$(jq -r '.model // empty' "$SETTINGS_FILE")
-    else
-        MODEL=""
+    # Try to get model from hook input first (most accurate)
+    MODEL=$(echo "$INPUT" | jq -r '.model // empty')
+
+    # Fall back to settings file if not in hook input
+    if [ -z "$MODEL" ] || [ "$MODEL" = "null" ]; then
+        SETTINGS_FILE="$HOME/.claude/settings.json"
+        if [ -f "$SETTINGS_FILE" ]; then
+            MODEL=$(jq -r '.model // empty' "$SETTINGS_FILE")
+        else
+            MODEL=""
+        fi
+    fi
+
+    # Also check project-level settings
+    if [ -z "$MODEL" ] || [ "$MODEL" = "null" ]; then
+        PROJECT_SETTINGS=".claude/settings.json"
+        if [ -f "$PROJECT_SETTINGS" ]; then
+            MODEL=$(jq -r '.model // empty' "$PROJECT_SETTINGS")
+        fi
     fi
 else
     # Fallback: basic grep parsing
@@ -134,7 +147,7 @@ if [ -z "$TOOL_DETAIL" ]; then
     TOOL_DETAIL_JSON="null"
 else
     # Remove control characters, truncate, and use jq to properly escape for JSON
-    TOOL_DETAIL=$(echo "$TOOL_DETAIL" | tr -d '\000-\037' | cut -c1-25)
+    TOOL_DETAIL=$(echo "$TOOL_DETAIL" | tr -d '\000-\037' | cut -c1-100)
     if [ -n "$TOOL_DETAIL" ]; then
         TOOL_DETAIL_JSON=$(echo -n "$TOOL_DETAIL" | jq -Rs '.')
     else
@@ -142,8 +155,8 @@ else
     fi
 fi
 
-# Sanitize and truncate task
-TASK=$(echo "$TASK" | tr -d '\000-\037' | cut -c1-15)
+# Sanitize and truncate task (allow longer names for display)
+TASK=$(echo "$TASK" | tr -d '\000-\037' | cut -c1-50)
 
 # Write status file
 cat > "$STATUS_FILE" << EOF

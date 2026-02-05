@@ -84,6 +84,128 @@ header h1 {
     background: var(--accent-red);
 }
 
+/* Device Frame - mimics physical device (137mm x 123mm proportions) */
+.device-frame {
+    background: linear-gradient(180deg, #e8e8e8 0%, #c8c8c8 50%, #d4d4d4 100%);
+    border-radius: 24px;
+    padding: 16px;
+    box-shadow:
+        0 12px 40px rgba(0,0,0,0.35),
+        0 4px 12px rgba(0,0,0,0.25),
+        inset 0 2px 0 rgba(255,255,255,0.9),
+        inset 0 -2px 0 rgba(0,0,0,0.15);
+    width: fit-content;
+    height: fit-content;
+}
+
+.device-body {
+    background: linear-gradient(180deg, #1e2028 0%, #14161c 100%);
+    border-radius: 12px;
+    padding: 12px;
+    box-shadow:
+        inset 0 2px 6px rgba(0,0,0,0.4),
+        0 1px 0 rgba(255,255,255,0.1);
+}
+
+/* Encoder knobs row */
+.encoder-row {
+    display: flex;
+    justify-content: space-between;
+    padding: 14px 30px 0 30px;
+}
+
+.encoder-knob {
+    width: 36px;
+    height: 36px;
+    border-radius: 50%;
+    background: linear-gradient(145deg, #5a5a5a 0%, #2a2a2a 50%, #3a3a3a 100%);
+    box-shadow:
+        0 4px 8px rgba(0,0,0,0.5),
+        inset 0 2px 3px rgba(255,255,255,0.15),
+        inset 0 -2px 3px rgba(0,0,0,0.4);
+    border: 2px solid #1a1a1a;
+    position: relative;
+}
+
+/* Knob indicator line */
+.encoder-knob::after {
+    content: '';
+    position: absolute;
+    top: 6px;
+    left: 50%;
+    transform: translateX(-50%);
+    width: 2px;
+    height: 8px;
+    background: rgba(255,255,255,0.4);
+    border-radius: 1px;
+}
+
+/* LCD Strip Status Display - 800x128 pixel ratio (6.25:1) */
+.lcd-strip {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    grid-template-rows: 1fr 1fr;
+    gap: 2px;
+    background: #202530;
+    border: 3px solid #0a0c10;
+    border-radius: 6px;
+    margin-top: 10px;
+    overflow: hidden;
+    font-family: 'JetBrains Mono', 'SF Mono', 'Monaco', monospace;
+    height: 100px;
+    box-shadow: inset 0 2px 4px rgba(0,0,0,0.5);
+    /* Fixed width to match button grid: 5 buttons × 110px + 4 gaps × 10px = 590px */
+    width: 590px;
+}
+
+.lcd-quadrant {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    padding: 6px 12px;
+    background: linear-gradient(180deg, #0e1018 0%, #080a0e 100%);
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+}
+
+.lcd-quadrant * {
+    min-width: 0;
+}
+
+.lcd-label {
+    font-size: 10px;
+    color: #505868;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    line-height: 1;
+    margin-bottom: 2px;
+}
+
+.lcd-value {
+    font-size: 16px;
+    font-weight: 600;
+    color: #e8e8f0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
+    line-height: 1.2;
+}
+
+.lcd-task .lcd-value { color: var(--accent-green); }
+.lcd-task .lcd-value.thinking { color: var(--accent-purple-bright); }
+.lcd-task .lcd-value.waiting { color: #dc8c32; }
+.lcd-task .lcd-value.error { color: var(--accent-red); }
+
+.lcd-detail .lcd-value { color: #909ab0; font-size: 13px; }
+
+.lcd-model .lcd-value { color: var(--accent-blue-bright); }
+
+.lcd-status .lcd-value.connected { color: var(--accent-green); }
+.lcd-status .lcd-value.offline { color: var(--accent-red); }
+.lcd-status .lcd-value.waiting { color: #dc8c32; }
+
 /* Profile Navigation */
 .profile-nav {
     display: flex;
@@ -144,16 +266,14 @@ main {
 
 /* Button Grid */
 .button-grid {
-    background: var(--bg-secondary);
-    border: 1px solid var(--border-color);
-    border-radius: var(--border-radius);
-    padding: 32px;
+    background: transparent;
+    padding: 4px;
 }
 
 .button-row {
     display: flex;
-    gap: 12px;
-    margin-bottom: 12px;
+    gap: 10px;
+    margin-bottom: 10px;
     justify-content: center;
 }
 
@@ -162,11 +282,11 @@ main {
 }
 
 .button-cell {
-    /* Larger tiles for better use of space */
-    width: 112px;
-    height: 112px;
-    min-width: 112px;
-    min-height: 112px;
+    /* Larger buttons for better visibility */
+    width: 110px;
+    height: 110px;
+    min-width: 110px;
+    min-height: 110px;
     background: linear-gradient(180deg, var(--bg-tertiary) 0%, var(--bg-secondary) 100%);
     border: 2px solid var(--border-color);
     border-radius: 8px;

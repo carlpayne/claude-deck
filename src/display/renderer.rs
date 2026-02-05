@@ -162,41 +162,9 @@ impl DisplayRenderer {
         Ok(img)
     }
 
-    /// Render the LCD strip with current state (legacy - not used for N4)
+    /// Render the full LCD strip (800x128)
     pub fn render_strip(&self, state: &AppState) -> Result<RgbImage> {
         render_strip_image(&self.font, state)
-    }
-
-    /// Render a single LCD strip soft button
-    pub fn render_strip_button(&self, button_id: u8, state: &AppState) -> Result<RgbImage> {
-        super::strip::render_strip_button(&self.font, button_id, state)
-    }
-
-    /// Render full-width strip and slice into 4 parts for N4
-    pub fn render_strip_slices(&self, state: &AppState) -> Result<[RgbImage; 4]> {
-        use crate::device::{STRIP_BUTTON_HEIGHT, STRIP_BUTTON_WIDTH, STRIP_HEIGHT, STRIP_WIDTH};
-        use image::imageops::{crop_imm, resize, FilterType};
-
-        // Render full 480x128 strip
-        let full_strip = render_strip_image(&self.font, state)?;
-
-        // Slice into 4 parts (120x128 each) and resize to 112x112
-        let slice_width = STRIP_WIDTH / 4; // 120
-        let mut slices: [RgbImage; 4] =
-            std::array::from_fn(|_| RgbImage::new(STRIP_BUTTON_WIDTH, STRIP_BUTTON_HEIGHT));
-
-        for (i, slot) in slices.iter_mut().enumerate() {
-            let x = i as u32 * slice_width;
-            let slice = crop_imm(&full_strip, x, 0, slice_width, STRIP_HEIGHT).to_image();
-            *slot = resize(
-                &slice,
-                STRIP_BUTTON_WIDTH,
-                STRIP_BUTTON_HEIGHT,
-                FilterType::Lanczos3,
-            );
-        }
-
-        Ok(slices)
     }
 
     /// Load and cache an icon
