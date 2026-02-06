@@ -25,6 +25,9 @@ pub const BRIGHT_PURPLE: Rgb<u8> = Rgb([170, 100, 240]);
 pub const GRAY: Rgb<u8> = Rgb([80, 85, 95]);
 pub const BRIGHT_GRAY: Rgb<u8> = Rgb([110, 115, 125]);
 pub const ORANGE: Rgb<u8> = Rgb([220, 140, 50]);
+pub const BRIGHT_ORANGE: Rgb<u8> = Rgb([255, 180, 60]);
+/// Warm background for waiting-flash "on" phase
+pub const WAITING_GLOW_BG: Rgb<u8> = Rgb([80, 45, 5]);
 pub const DARK_BG: Rgb<u8> = Rgb([15, 15, 22]);
 #[allow(dead_code)]
 pub const BUTTON_BG: Rgb<u8> = Rgb([25, 28, 38]);

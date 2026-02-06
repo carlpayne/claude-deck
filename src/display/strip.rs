@@ -3,7 +3,8 @@ use image::{Rgb, RgbImage};
 use rusttype::Font;
 
 use super::renderer::{
-    draw_filled_rect, draw_text, text_width, BLUE, BRIGHT_PURPLE, GRAY, GREEN, ORANGE, RED, WHITE,
+    draw_filled_rect, draw_text, text_width, BLUE, BRIGHT_ORANGE, BRIGHT_PURPLE, GRAY, GREEN,
+    ORANGE, RED, WAITING_GLOW_BG, WHITE,
 };
 use crate::device::{STRIP_BUTTON_HEIGHT, STRIP_BUTTON_WIDTH, STRIP_HEIGHT, STRIP_WIDTH};
 use crate::state::AppState;
@@ -53,13 +54,24 @@ fn fill_gradient_vertical(img: &mut RgbImage, top: Rgb<u8>, bottom: Rgb<u8>) {
 
 /// Render status button (connection indicator)
 fn render_status_button(img: &mut RgbImage, font: &Font, state: &AppState) {
+    let flash_on = state.waiting_for_input && state.waiting_flash_on;
+
+    // Warm background glow + orange border when waiting + flash on
+    if flash_on {
+        draw_filled_rect(img, 2, 2, STRIP_BUTTON_WIDTH - 4, STRIP_BUTTON_HEIGHT - 4, WAITING_GLOW_BG);
+        draw_waiting_border(img, 0, 0, STRIP_BUTTON_WIDTH, STRIP_BUTTON_HEIGHT);
+    }
+
     // Header with accent line
     draw_filled_rect(img, 4, 4, STRIP_BUTTON_WIDTH - 8, 20, Rgb([30, 35, 45]));
-    draw_text(img, font, "STATUS", 10, 6, 11.0, Rgb([120, 130, 150]));
+    let header_color = if flash_on { ORANGE } else { Rgb([120, 130, 150]) };
+    draw_text(img, font, "STATUS", 10, 6, 11.0, header_color);
 
-    // Show LOCKED status when screen is locked (input disabled)
+    // Show status with waiting state
     let (status, color) = if state.screen_locked {
         ("LOCKED", ORANGE)
+    } else if state.waiting_for_input {
+        if flash_on { ("WAITING", WHITE) } else { ("WAITING", ORANGE) }
     } else if state.connected {
         ("CONNECTED", GREEN)
     } else {
@@ -71,11 +83,15 @@ fn render_status_button(img: &mut RgbImage, font: &Font, state: &AppState) {
     let x = ((STRIP_BUTTON_WIDTH as i32 - status_width) / 2).max(4);
     draw_text(img, font, status, x, 45, 15.0, color);
 
-    // Connection indicator dot (or lock symbol when locked)
+    // Connection indicator dot (or lock/waiting symbol)
     let dot_x = (STRIP_BUTTON_WIDTH as i32 / 2) - 8;
     if state.screen_locked {
-        // Draw a simple lock symbol using ASCII
         draw_text(img, font, "[X]", dot_x - 8, 78, 18.0, ORANGE);
+    } else if state.waiting_for_input {
+        let (symbol, sym_color) = if flash_on { (">>>", BRIGHT_ORANGE) } else { ("...", ORANGE) };
+        let sym_width = text_width(font, symbol, 18.0);
+        let sx = ((STRIP_BUTTON_WIDTH as i32 - sym_width) / 2).max(4);
+        draw_text(img, font, symbol, sx, 78, 18.0, sym_color);
     } else {
         draw_text(img, font, "●", dot_x, 78, 24.0, color);
     }
@@ -107,14 +123,23 @@ fn render_model_button(img: &mut RgbImage, font: &Font, state: &AppState) {
 
 /// Render task button (current task)
 fn render_task_button(img: &mut RgbImage, font: &Font, state: &AppState) {
+    let flash_on = state.waiting_for_input && state.waiting_flash_on;
+
+    // Warm background glow + orange border when waiting + flash on
+    if flash_on {
+        draw_filled_rect(img, 2, 2, STRIP_BUTTON_WIDTH - 4, STRIP_BUTTON_HEIGHT - 4, WAITING_GLOW_BG);
+        draw_waiting_border(img, 0, 0, STRIP_BUTTON_WIDTH, STRIP_BUTTON_HEIGHT);
+    }
+
     // Header
     draw_filled_rect(img, 4, 4, STRIP_BUTTON_WIDTH - 8, 20, Rgb([30, 35, 45]));
-    draw_text(img, font, "TASK", 10, 6, 11.0, Rgb([120, 130, 150]));
+    let header_color = if flash_on { ORANGE } else { Rgb([120, 130, 150]) };
+    draw_text(img, font, "TASK", 10, 6, 11.0, header_color);
 
     let task_color = if state.task_name == "ERROR" || state.task_name == "RATE LIMITED" {
         RED
     } else if state.waiting_for_input {
-        ORANGE
+        if flash_on { WHITE } else { ORANGE }
     } else if state.task_name == "READY" {
         GREEN
     } else if state.task_name == "THINKING" {
@@ -148,9 +173,14 @@ fn render_task_button(img: &mut RgbImage, font: &Font, state: &AppState) {
 
     // Line 3: Status indicator
     if state.waiting_for_input {
-        let wait_width = text_width(font, "WAITING", 10.0);
+        let (wait_text, wait_color) = if flash_on {
+            ("WAITING", BRIGHT_ORANGE)
+        } else {
+            ("WAITING", ORANGE)
+        };
+        let wait_width = text_width(font, wait_text, 10.0);
         let x = ((STRIP_BUTTON_WIDTH as i32 - wait_width) / 2).max(4);
-        draw_text(img, font, "WAITING", x, 78, 10.0, ORANGE);
+        draw_text(img, font, wait_text, x, 78, 10.0, wait_color);
     } else if state.task_name == "THINKING" {
         // Animated dots would be nice, but for now just show dots
         let dots_width = text_width(font, "...", 12.0);
@@ -281,15 +311,23 @@ fn draw_quadrant_task(img: &mut RgbImage, font: &Font, state: &AppState) {
     let y_label = 8;
     let y_value = 28;
     let max_width = QUAD_WIDTH - PADDING * 2 - 10;
+    let flash_on = state.waiting_for_input && state.waiting_flash_on;
+
+    // Warm background glow + orange border when waiting + flash on
+    if flash_on {
+        draw_filled_rect(img, 4, 2, (QUAD_WIDTH - 8) as u32, (QUAD_HEIGHT - 4) as u32, WAITING_GLOW_BG);
+        draw_waiting_border(img, 2, 0, (QUAD_WIDTH - 4) as u32, QUAD_HEIGHT as u32);
+    }
 
     // Label
-    draw_text(img, font, "TASK", x, y_label, LABEL_SIZE, GRAY);
+    let label_color = if flash_on { ORANGE } else { GRAY };
+    draw_text(img, font, "TASK", x, y_label, LABEL_SIZE, label_color);
 
     // Value with color based on state
     let task_color = if state.task_name == "ERROR" || state.task_name == "RATE LIMITED" {
         RED
     } else if state.waiting_for_input {
-        ORANGE
+        if flash_on { WHITE } else { ORANGE }
     } else if state.task_name == "THINKING" {
         BRIGHT_PURPLE
     } else if state.task_name == "READY" {
@@ -342,17 +380,38 @@ fn draw_quadrant_status(img: &mut RgbImage, font: &Font, state: &AppState) {
     let x = QUAD_WIDTH + PADDING;
     let y_label = QUAD_HEIGHT + 6;
     let y_value = QUAD_HEIGHT + 26;
+    let flash_on = state.waiting_for_input && state.waiting_flash_on;
+
+    // Warm background glow + orange border when waiting + flash on
+    if flash_on {
+        draw_filled_rect(
+            img,
+            QUAD_WIDTH as u32 + 4,
+            QUAD_HEIGHT as u32 + 2,
+            (QUAD_WIDTH - 8) as u32,
+            (QUAD_HEIGHT - 4) as u32,
+            WAITING_GLOW_BG,
+        );
+        draw_waiting_border(
+            img,
+            QUAD_WIDTH as u32 + 2,
+            QUAD_HEIGHT as u32,
+            (QUAD_WIDTH - 4) as u32,
+            QUAD_HEIGHT as u32,
+        );
+    }
 
     // Label
-    draw_text(img, font, "STATUS", x, y_label, LABEL_SIZE, GRAY);
+    let label_color = if flash_on { ORANGE } else { GRAY };
+    draw_text(img, font, "STATUS", x, y_label, LABEL_SIZE, label_color);
 
-    // Status value
+    // Status value — text flashes to WHITE on bright phase
     let (status_text, status_color) = if state.screen_locked {
         ("LOCKED", ORANGE)
     } else if state.model_selecting {
         ("rotate to select", GRAY)
     } else if state.waiting_for_input {
-        ("WAITING FOR INPUT", ORANGE)
+        if flash_on { ("WAITING FOR INPUT", WHITE) } else { ("WAITING FOR INPUT", ORANGE) }
     } else if state.connected {
         ("CONNECTED", GREEN)
     } else {
@@ -422,6 +481,35 @@ fn truncate_text_path(font: &Font, text: &str, scale: f32, max_width: i32) -> St
     }
 
     truncate_text(font, text, scale, max_width)
+}
+
+/// Draw an orange accent border (2px) around a rectangular region
+fn draw_waiting_border(img: &mut RgbImage, x: u32, y: u32, w: u32, h: u32) {
+    let color = ORANGE;
+    let x_end = (x + w).min(img.width());
+    let y_end = (y + h).min(img.height());
+    // Top and bottom edges (2px)
+    for px in x..x_end {
+        for dy in 0..2u32 {
+            if y + dy < img.height() {
+                img.put_pixel(px, y + dy, color);
+            }
+            if y_end >= 2 + dy && y_end - 1 - dy < img.height() {
+                img.put_pixel(px, y_end - 1 - dy, color);
+            }
+        }
+    }
+    // Left and right edges (2px)
+    for py in y..y_end {
+        for dx in 0..2u32 {
+            if x + dx < img.width() {
+                img.put_pixel(x + dx, py, color);
+            }
+            if x_end >= 2 + dx && x_end - 1 - dx < img.width() {
+                img.put_pixel(x_end - 1 - dx, py, color);
+            }
+        }
+    }
 }
 
 /// Draw a horizontal separator line

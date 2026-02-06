@@ -113,13 +113,15 @@ async function pollStatus() {
 }
 
 function updateLcdDisplay(status) {
+    const isWaiting = !!status.waiting_for_input;
+
     // Task
     const task = status.task || 'READY';
     elements.lcdTask.textContent = task;
     elements.lcdTask.className = 'lcd-value';
     if (task === 'THINKING') elements.lcdTask.classList.add('thinking');
     else if (task === 'ERROR' || task === 'RATE LIMITED') elements.lcdTask.classList.add('error');
-    else if (status.waiting_for_input) elements.lcdTask.classList.add('waiting');
+    else if (isWaiting) elements.lcdTask.classList.add('waiting');
 
     // Detail
     elements.lcdDetail.textContent = status.tool_detail || '-';
@@ -130,7 +132,7 @@ function updateLcdDisplay(status) {
     // Status
     let statusText = 'OFFLINE';
     let statusClass = 'offline';
-    if (status.waiting_for_input) {
+    if (isWaiting) {
         statusText = 'WAITING FOR INPUT';
         statusClass = 'waiting';
     } else if (status.processing || status.task !== 'READY') {
@@ -142,6 +144,12 @@ function updateLcdDisplay(status) {
     }
     elements.lcdStatus.textContent = statusText;
     elements.lcdStatus.className = 'lcd-value ' + statusClass;
+
+    // Pulse the quadrant backgrounds when waiting for input
+    const taskQuadrant = elements.lcdTask.closest('.lcd-quadrant');
+    const statusQuadrant = elements.lcdStatus.closest('.lcd-quadrant');
+    if (taskQuadrant) taskQuadrant.classList.toggle('waiting', isWaiting);
+    if (statusQuadrant) statusQuadrant.classList.toggle('waiting', isWaiting);
 }
 
 // API Functions

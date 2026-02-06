@@ -52,6 +52,9 @@ pub struct AppState {
     /// Screen is locked - input disabled for security
     #[serde(skip)]
     pub screen_locked: bool,
+    /// Flash toggle for waiting-for-input animation (alternates on/off)
+    #[serde(skip)]
+    pub waiting_flash_on: bool,
 
     // Configuration
     /// Available models (from config)
@@ -94,6 +97,7 @@ impl AppState {
             focused_app: String::new(),
             play_intro: false,
             screen_locked: false,
+            waiting_flash_on: false,
             available_models: default_models,
             terminal_app: "Terminal".to_string(),
             brightness: 80,
@@ -132,6 +136,7 @@ impl AppState {
             focused_app: String::new(),
             play_intro: false,
             screen_locked: false,
+            waiting_flash_on: false,
             available_models,
             terminal_app,
             brightness,

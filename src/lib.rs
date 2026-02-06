@@ -234,6 +234,9 @@ impl App {
         let mut last_gif_tick = std::time::Instant::now();
         let gif_tick_interval = std::time::Duration::from_millis(16); // 60 FPS tick rate
 
+        let mut last_waiting_flash = std::time::Instant::now();
+        let waiting_flash_interval = std::time::Duration::from_millis(500); // Pulse every 500ms
+
         // Track last device write to enforce cooldown (HID device needs time between operations)
         let mut last_device_write = std::time::Instant::now();
         let device_cooldown = std::time::Duration::from_millis(20); // Min gap between device operations
@@ -419,6 +422,23 @@ impl App {
                         warn!("Failed to update strip for lock state: {}", e);
                     }
                     last_device_write = std::time::Instant::now();
+                }
+            }
+
+            // Flash the LCD strip when waiting for user input
+            if last_waiting_flash.elapsed() >= waiting_flash_interval {
+                last_waiting_flash = std::time::Instant::now();
+                let mut state = self.state.write().await;
+                if state.waiting_for_input {
+                    state.waiting_flash_on = !state.waiting_flash_on;
+                    drop(state);
+                    if let Err(e) = self.update_display().await {
+                        debug!("Failed to update display for waiting flash: {}", e);
+                    }
+                    last_device_write = std::time::Instant::now();
+                } else if state.waiting_flash_on {
+                    // Reset flash state when no longer waiting
+                    state.waiting_flash_on = false;
                 }
             }
 
