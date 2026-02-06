@@ -340,8 +340,14 @@ fn draw_quadrant_task(img: &mut RgbImage, font: &Font, state: &AppState) {
     draw_text(img, font, &task_display, x, y_value, VALUE_SIZE, task_color);
 }
 
-/// Top-right quadrant: Tool detail
+/// Top-right quadrant: Tool detail (or brightness overlay)
 fn draw_quadrant_detail(img: &mut RgbImage, font: &Font, state: &AppState) {
+    // Show brightness overlay if active
+    if state.is_brightness_display_active() {
+        draw_quadrant_brightness(img, font, state);
+        return;
+    }
+
     let x = QUAD_WIDTH + PADDING;
     let y_label = 8;
     let y_value = 28;
@@ -357,6 +363,37 @@ fn draw_quadrant_detail(img: &mut RgbImage, font: &Font, state: &AppState) {
         draw_text(img, font, &detail_display, x, y_value, VALUE_SIZE, WHITE);
     } else {
         draw_text(img, font, "-", x, y_value, VALUE_SIZE, GRAY);
+    }
+}
+
+/// Top-right quadrant: Brightness overlay (shown for 2s after encoder rotation)
+fn draw_quadrant_brightness(img: &mut RgbImage, font: &Font, state: &AppState) {
+    let x = QUAD_WIDTH + PADDING;
+    let y_label = 8;
+
+    // Label + percentage
+    draw_text(img, font, "BRIGHTNESS", x, y_label, LABEL_SIZE, GRAY);
+
+    let brightness = state.brightness;
+    let pct_text = format!("{}%", brightness);
+
+    let pct_width = text_width(font, &pct_text, LABEL_SIZE);
+    let pct_x = QUAD_WIDTH * 2 - PADDING - pct_width;
+    draw_text(img, font, &pct_text, pct_x, y_label, LABEL_SIZE, BLUE);
+
+    // Progress bar
+    let bar_x = (QUAD_WIDTH + PADDING) as u32;
+    let bar_y = 28u32;
+    let bar_w = (QUAD_WIDTH - PADDING * 2) as u32;
+    let bar_h = 24u32;
+
+    // Bar background
+    draw_filled_rect(img, bar_x, bar_y, bar_w, bar_h, Rgb([30, 32, 42]));
+
+    // Filled portion
+    let fill_w = (bar_w as f32 * brightness as f32 / 100.0) as u32;
+    if fill_w > 0 {
+        draw_filled_rect(img, bar_x, bar_y, fill_w, bar_h, BLUE);
     }
 }
 

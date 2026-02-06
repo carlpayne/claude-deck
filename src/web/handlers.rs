@@ -717,6 +717,8 @@ pub async fn get_status(
     if let Some(obj) = status.as_object_mut() {
         obj.insert("volume".to_string(), serde_json::json!(device.volume));
         obj.insert("volume_display_active".to_string(), serde_json::json!(device.is_volume_display_active()));
+        obj.insert("brightness".to_string(), serde_json::json!(device.brightness));
+        obj.insert("brightness_display_active".to_string(), serde_json::json!(device.is_brightness_display_active()));
         obj.insert("connected".to_string(), serde_json::json!(device.connected));
     }
 

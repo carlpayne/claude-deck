@@ -80,6 +80,11 @@ pub struct AppState {
     /// When to stop showing the volume overlay on the LCD strip
     #[serde(skip)]
     pub volume_display_until: Option<Instant>,
+
+    // Brightness overlay
+    /// When to stop showing the brightness overlay on the LCD strip
+    #[serde(skip)]
+    pub brightness_display_until: Option<Instant>,
 }
 
 impl Default for AppState {
@@ -116,6 +121,7 @@ impl AppState {
             volume: 50,
             volume_changed: false,
             volume_display_until: None,
+            brightness_display_until: None,
         }
     }
 
@@ -158,19 +164,22 @@ impl AppState {
             volume: 50,
             volume_changed: false,
             volume_display_until: None,
+            brightness_display_until: None,
         }
     }
 
     /// Adjust brightness by a delta (positive or negative)
     /// Returns the new brightness value
     pub fn adjust_brightness(&mut self, delta: i8) -> u8 {
-        let step = 20i16; // 20% steps (device supports 5 levels: 20, 40, 60, 80, 100)
+        let step = 5i16; // 5% steps for fine-grained control
         let change = delta as i16 * step;
-        let new_brightness = (self.brightness as i16 + change).clamp(20, 100) as u8;
+        let new_brightness = (self.brightness as i16 + change).clamp(5, 100) as u8;
         if new_brightness != self.brightness {
             self.brightness = new_brightness;
             self.brightness_changed = true;
         }
+        // Always refresh the overlay timer (even if brightness didn't change, user is interacting)
+        self.brightness_display_until = Some(Instant::now() + std::time::Duration::from_secs(2));
         self.brightness
     }
 
@@ -192,6 +201,13 @@ impl AppState {
     /// Check if the volume overlay should be displayed on the LCD strip
     pub fn is_volume_display_active(&self) -> bool {
         self.volume_display_until
+            .map(|until| Instant::now() < until)
+            .unwrap_or(false)
+    }
+
+    /// Check if the brightness overlay should be displayed on the LCD strip
+    pub fn is_brightness_display_active(&self) -> bool {
+        self.brightness_display_until
             .map(|until| Instant::now() < until)
             .unwrap_or(false)
     }

@@ -123,8 +123,33 @@ function updateLcdDisplay(status) {
     else if (task === 'ERROR' || task === 'RATE LIMITED') elements.lcdTask.classList.add('error');
     else if (isWaiting) elements.lcdTask.classList.add('waiting');
 
-    // Detail
-    elements.lcdDetail.textContent = status.tool_detail || '-';
+    // Detail quadrant - show brightness overlay or normal detail
+    const detailQuadrant = elements.lcdDetail.closest('.lcd-quadrant');
+    const brightnessActive = !!status.brightness_display_active;
+
+    if (brightnessActive && status.brightness !== undefined) {
+        // Brightness overlay mode
+        if (detailQuadrant) detailQuadrant.classList.add('brightness-active');
+
+        const brightness = status.brightness;
+        const pctText = brightness + '%';
+        const barColor = 'var(--accent-blue-bright)';
+
+        elements.lcdDetail.innerHTML =
+            '<span class="brightness-header">' +
+                '<span class="brightness-label">BRIGHTNESS</span>' +
+                '<span class="brightness-pct" style="color:' + barColor + '">' + pctText + '</span>' +
+            '</span>' +
+            '<div class="brightness-bar-track">' +
+                '<div class="brightness-bar-fill" style="width:' + brightness + '%;background:' + barColor + '"></div>' +
+            '</div>';
+        elements.lcdDetail.className = 'lcd-value brightness';
+    } else {
+        // Normal detail mode
+        if (detailQuadrant) detailQuadrant.classList.remove('brightness-active');
+        elements.lcdDetail.textContent = status.tool_detail || '-';
+        elements.lcdDetail.className = 'lcd-value';
+    }
 
     // Model
     elements.lcdModel.textContent = (status.model || 'unknown').toUpperCase();

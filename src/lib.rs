@@ -256,8 +256,9 @@ impl App {
         let mut last_device_write = std::time::Instant::now();
         let device_cooldown = std::time::Duration::from_millis(20); // Min gap between device operations
 
-        // Track volume overlay state to refresh display when it expires
+        // Track volume/brightness overlay state to refresh display when they expire
         let mut volume_overlay_was_active = false;
+        let mut brightness_overlay_was_active = false;
 
         loop {
             // Check for commands from web UI (non-blocking)
@@ -511,6 +512,19 @@ impl App {
                     last_device_write = std::time::Instant::now();
                 }
                 volume_overlay_was_active = volume_overlay_active;
+            }
+
+            // Check if brightness overlay just expired (transition active→inactive)
+            {
+                let brightness_overlay_active = self.state.read().await.is_brightness_display_active();
+                if brightness_overlay_was_active && !brightness_overlay_active {
+                    // Overlay just expired, refresh display to restore DETAIL quadrant
+                    if let Err(e) = self.update_display().await {
+                        debug!("Failed to update display after brightness overlay expired: {}", e);
+                    }
+                    last_device_write = std::time::Instant::now();
+                }
+                brightness_overlay_was_active = brightness_overlay_active;
             }
 
             // Update GIF animations (respect device cooldown to avoid HID conflicts)
