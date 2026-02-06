@@ -42,18 +42,23 @@ pub struct App {
 }
 
 impl App {
-    /// Create a new application instance
-    pub async fn new(
-        config: Config,
-        profile_manager: Arc<StdRwLock<ProfileManager>>,
-        command_rx: mpsc::Receiver<AppCommand>,
-    ) -> Result<Self> {
-        let state = Arc::new(TokioRwLock::new(AppState::with_config(
+    /// Create the shared app state (call before web server + App so both can share it)
+    pub fn create_state(config: &Config) -> Arc<TokioRwLock<AppState>> {
+        Arc::new(TokioRwLock::new(AppState::with_config(
             config.models.available.clone(),
             &config.models.default,
             config.new_session.terminal.clone(),
             config.device.brightness,
-        )));
+        )))
+    }
+
+    /// Create a new application instance with an existing shared state
+    pub async fn new(
+        config: Config,
+        profile_manager: Arc<StdRwLock<ProfileManager>>,
+        command_rx: mpsc::Receiver<AppCommand>,
+        state: Arc<TokioRwLock<AppState>>,
+    ) -> Result<Self> {
 
         // Try to connect to device
         let brightness = state.read().await.brightness;
@@ -77,6 +82,12 @@ impl App {
                 None
             }
         };
+
+        // Initialize volume from system
+        if let Some(vol) = system::get_system_volume().await {
+            state.write().await.set_volume_from_system(vol);
+            info!("System volume initialized: {}%", vol);
+        }
 
         let display = DisplayRenderer::new(&config, Arc::clone(&profile_manager))?;
         let input = InputHandler::new(state.clone(), Arc::clone(&profile_manager));
@@ -231,6 +242,10 @@ impl App {
         let mut last_lock_check = std::time::Instant::now();
         let lock_check_interval = std::time::Duration::from_secs(2); // Check every 2 seconds (security, not latency-critical)
 
+        let mut last_volume_check = std::time::Instant::now();
+        let volume_check_interval = std::time::Duration::from_secs(2); // Sync external volume changes
+        let mut pending_volume_check: Option<tokio::task::JoinHandle<Option<u8>>> = None;
+
         let mut last_gif_tick = std::time::Instant::now();
         let gif_tick_interval = std::time::Duration::from_millis(16); // 60 FPS tick rate
 
@@ -240,6 +255,9 @@ impl App {
         // Track last device write to enforce cooldown (HID device needs time between operations)
         let mut last_device_write = std::time::Instant::now();
         let device_cooldown = std::time::Duration::from_millis(20); // Min gap between device operations
+
+        // Track volume overlay state to refresh display when it expires
+        let mut volume_overlay_was_active = false;
 
         loop {
             // Check for commands from web UI (non-blocking)
@@ -315,6 +333,23 @@ impl App {
                     if let Some(ref device) = self.device {
                         device.set_brightness(brightness).await.ok();
                     }
+                }
+
+                // Check if volume was changed
+                let volume_changed = {
+                    let mut state = self.state.write().await;
+                    let changed = state.volume_changed;
+                    state.volume_changed = false;
+                    if changed {
+                        Some(state.volume)
+                    } else {
+                        None
+                    }
+                };
+                if let Some(volume) = volume_changed {
+                    tokio::spawn(async move {
+                        system::set_system_volume(volume).await;
+                    });
                 }
 
                 // Check if intro animation was requested
@@ -425,6 +460,29 @@ impl App {
                 }
             }
 
+            // Poll system volume in background to detect external changes
+            if let Some(handle) = pending_volume_check.take() {
+                if handle.is_finished() {
+                    if let Ok(Some(system_vol)) = handle.await {
+                        let mut state = self.state.write().await;
+                        // Only sync if not currently being adjusted via encoder
+                        if !state.is_volume_display_active() && state.volume != system_vol {
+                            debug!("System volume changed externally: {}% -> {}%", state.volume, system_vol);
+                            state.set_volume_from_system(system_vol);
+                        }
+                    }
+                } else {
+                    pending_volume_check = Some(handle);
+                }
+            }
+
+            if pending_volume_check.is_none() && last_volume_check.elapsed() >= volume_check_interval {
+                last_volume_check = std::time::Instant::now();
+                pending_volume_check = Some(tokio::spawn(async {
+                    system::get_system_volume().await
+                }));
+            }
+
             // Flash the LCD strip when waiting for user input
             if last_waiting_flash.elapsed() >= waiting_flash_interval {
                 last_waiting_flash = std::time::Instant::now();
@@ -440,6 +498,19 @@ impl App {
                     // Reset flash state when no longer waiting
                     state.waiting_flash_on = false;
                 }
+            }
+
+            // Check if volume overlay just expired (transition active→inactive)
+            {
+                let volume_overlay_active = self.state.read().await.is_volume_display_active();
+                if volume_overlay_was_active && !volume_overlay_active {
+                    // Overlay just expired, refresh display to restore STATUS quadrant
+                    if let Err(e) = self.update_display().await {
+                        debug!("Failed to update display after volume overlay expired: {}", e);
+                    }
+                    last_device_write = std::time::Instant::now();
+                }
+                volume_overlay_was_active = volume_overlay_active;
             }
 
             // Update GIF animations (respect device cooldown to avoid HID conflicts)

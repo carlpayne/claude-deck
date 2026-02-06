@@ -129,27 +129,53 @@ function updateLcdDisplay(status) {
     // Model
     elements.lcdModel.textContent = (status.model || 'unknown').toUpperCase();
 
-    // Status
-    let statusText = 'OFFLINE';
-    let statusClass = 'offline';
-    if (isWaiting) {
-        statusText = 'WAITING FOR INPUT';
-        statusClass = 'waiting';
-    } else if (status.processing || status.task !== 'READY') {
-        statusText = 'CONNECTED';
-        statusClass = 'connected';
-    } else if (status.timestamp && (Date.now() / 1000 - status.timestamp) < 30) {
-        statusText = 'CONNECTED';
-        statusClass = 'connected';
-    }
-    elements.lcdStatus.textContent = statusText;
-    elements.lcdStatus.className = 'lcd-value ' + statusClass;
-
-    // Pulse the quadrant backgrounds when waiting for input
-    const taskQuadrant = elements.lcdTask.closest('.lcd-quadrant');
+    // Status quadrant - show volume overlay or normal status
     const statusQuadrant = elements.lcdStatus.closest('.lcd-quadrant');
+    const volumeActive = !!status.volume_display_active;
+
+    if (volumeActive && status.volume !== undefined) {
+        // Volume overlay mode
+        statusQuadrant.classList.remove('waiting');
+        statusQuadrant.classList.add('volume-active');
+
+        const volume = status.volume;
+        const pctText = volume === 0 ? 'MUTED' : volume + '%';
+        const barColor = volume === 0 ? 'var(--accent-red)' : volume > 80 ? '#dc8c32' : 'var(--accent-green)';
+
+        elements.lcdStatus.innerHTML =
+            '<span class="volume-header">' +
+                '<span class="volume-label">VOLUME</span>' +
+                '<span class="volume-pct" style="color:' + barColor + '">' + pctText + '</span>' +
+            '</span>' +
+            '<div class="volume-bar-track">' +
+                '<div class="volume-bar-fill" style="width:' + volume + '%;background:' + barColor + '"></div>' +
+            '</div>';
+        elements.lcdStatus.className = 'lcd-value volume';
+    } else {
+        // Normal status mode
+        statusQuadrant.classList.remove('volume-active');
+
+        let statusText = 'OFFLINE';
+        let statusClass = 'offline';
+        if (isWaiting) {
+            statusText = 'WAITING FOR INPUT';
+            statusClass = 'waiting';
+        } else if (status.processing || status.task !== 'READY') {
+            statusText = 'CONNECTED';
+            statusClass = 'connected';
+        } else if (status.timestamp && (Date.now() / 1000 - status.timestamp) < 30) {
+            statusText = 'CONNECTED';
+            statusClass = 'connected';
+        }
+        elements.lcdStatus.textContent = statusText;
+        elements.lcdStatus.className = 'lcd-value ' + statusClass;
+
+        if (statusQuadrant) statusQuadrant.classList.toggle('waiting', isWaiting);
+    }
+
+    // Pulse the task quadrant background when waiting for input
+    const taskQuadrant = elements.lcdTask.closest('.lcd-quadrant');
     if (taskQuadrant) taskQuadrant.classList.toggle('waiting', isWaiting);
-    if (statusQuadrant) statusQuadrant.classList.toggle('waiting', isWaiting);
 }
 
 // API Functions

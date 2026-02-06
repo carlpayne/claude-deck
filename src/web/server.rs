@@ -25,6 +25,7 @@ pub async fn start_server(
     config: Arc<TokioRwLock<Config>>,
     profile_manager: Arc<StdRwLock<ProfileManager>>,
     change_tx: mpsc::Sender<ConfigChangeEvent>,
+    device_state: Arc<TokioRwLock<crate::state::AppState>>,
 ) -> anyhow::Result<()> {
     let port = config.read().await.web.port;
     let addr = SocketAddr::from(([127, 0, 0, 1], port));
@@ -33,6 +34,7 @@ pub async fn start_server(
         config,
         profile_manager,
         change_tx,
+        device_state,
     });
 
     // CORS layer for development

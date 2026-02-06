@@ -291,12 +291,19 @@ impl DeviceManager {
                 Ok(DeviceInput::EncoderStateChange(encoders))
             }
 
-            // Encoder 0 rotation (leftmost knob)
-            // Pattern: 0x70 = CCW, 0x71 = CW (consistent with other encoders using +1 for CW)
-            // Also handles 0xa0/0xa1 which some devices send
-            0x70 | 0x71 | 0xa0 | 0xa1 => {
+            // Encoder 3 rotation (rightmost knob)
+            // Pattern: 0x70 = CCW, 0x71 = CW
+            0x70 | 0x71 => {
                 let mut directions = vec![0i8; ENCODER_COUNT as usize];
-                // Odd = CW (+1), Even = CCW (-1)
+                let dir = if event_type & 1 == 1 { 1 } else { -1 };
+                directions[3] = dir;
+                Ok(DeviceInput::EncoderTwist(directions))
+            }
+
+            // Encoder 0 rotation (leftmost knob)
+            // Pattern: 0xa0 = CCW, 0xa1 = CW
+            0xa0 | 0xa1 => {
+                let mut directions = vec![0i8; ENCODER_COUNT as usize];
                 let dir = if event_type & 1 == 1 { 1 } else { -1 };
                 directions[0] = dir;
                 Ok(DeviceInput::EncoderTwist(directions))

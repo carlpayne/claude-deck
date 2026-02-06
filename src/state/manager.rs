@@ -69,6 +69,17 @@ pub struct AppState {
     /// Flag to indicate brightness needs to be applied to device
     #[serde(skip)]
     pub brightness_changed: bool,
+
+    // Volume control
+    /// Current system volume (0-100)
+    #[serde(skip)]
+    pub volume: u8,
+    /// Flag to indicate volume needs to be applied to system
+    #[serde(skip)]
+    pub volume_changed: bool,
+    /// When to stop showing the volume overlay on the LCD strip
+    #[serde(skip)]
+    pub volume_display_until: Option<Instant>,
 }
 
 impl Default for AppState {
@@ -102,6 +113,9 @@ impl AppState {
             terminal_app: "Terminal".to_string(),
             brightness: 80,
             brightness_changed: false,
+            volume: 50,
+            volume_changed: false,
+            volume_display_until: None,
         }
     }
 
@@ -141,6 +155,9 @@ impl AppState {
             terminal_app,
             brightness,
             brightness_changed: false,
+            volume: 50,
+            volume_changed: false,
+            volume_display_until: None,
         }
     }
 
@@ -155,6 +172,33 @@ impl AppState {
             self.brightness_changed = true;
         }
         self.brightness
+    }
+
+    /// Adjust volume by a delta (positive or negative), 5% steps
+    /// Returns the new volume value
+    pub fn adjust_volume(&mut self, delta: i8) -> u8 {
+        let step = 5i16;
+        let change = delta as i16 * step;
+        let new_volume = (self.volume as i16 + change).clamp(0, 100) as u8;
+        if new_volume != self.volume {
+            self.volume = new_volume;
+            self.volume_changed = true;
+        }
+        // Always refresh the overlay timer (even if volume didn't change, user is interacting)
+        self.volume_display_until = Some(Instant::now() + std::time::Duration::from_secs(2));
+        self.volume
+    }
+
+    /// Check if the volume overlay should be displayed on the LCD strip
+    pub fn is_volume_display_active(&self) -> bool {
+        self.volume_display_until
+            .map(|until| Instant::now() < until)
+            .unwrap_or(false)
+    }
+
+    /// Set volume from system reading (initialization, no changed flag)
+    pub fn set_volume_from_system(&mut self, volume: u8) {
+        self.volume = volume.min(100);
     }
 
     /// Flash a button for visual feedback (shows as active briefly)

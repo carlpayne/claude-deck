@@ -25,6 +25,7 @@ pub struct AppState {
     pub config: Arc<TokioRwLock<Config>>,
     pub profile_manager: Arc<StdRwLock<ProfileManager>>,
     pub change_tx: mpsc::Sender<ConfigChangeEvent>,
+    pub device_state: Arc<TokioRwLock<crate::state::AppState>>,
 }
 
 /// GET /api/profiles - List all profiles
@@ -682,27 +683,44 @@ pub async fn search_giphy(
     }
 }
 
-/// GET /api/status - Get current Claude status from state file
-pub async fn get_status() -> Json<ApiResponse<serde_json::Value>> {
+/// GET /api/status - Get current Claude status from state file + live device state
+pub async fn get_status(
+    State(state): State<Arc<AppState>>,
+) -> Json<ApiResponse<serde_json::Value>> {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
     let state_path = std::path::PathBuf::from(home).join(".claude-deck/state.json");
 
-    match std::fs::read_to_string(&state_path) {
+    let mut status = match std::fs::read_to_string(&state_path) {
         Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
-            Ok(state) => Json(ApiResponse::ok(state)),
-            Err(e) => Json(ApiResponse::error(format!("Failed to parse state: {}", e))),
-        },
-        Err(_) => {
-            // Return default state if file doesn't exist
-            Json(ApiResponse::ok(serde_json::json!({
+            Ok(state) => state,
+            Err(_) => serde_json::json!({
                 "task": "READY",
                 "tool_detail": null,
                 "waiting_for_input": false,
                 "model": "unknown",
                 "connected": false
-            })))
+            }),
+        },
+        Err(_) => {
+            serde_json::json!({
+                "task": "READY",
+                "tool_detail": null,
+                "waiting_for_input": false,
+                "model": "unknown",
+                "connected": false
+            })
         }
+    };
+
+    // Augment with live device state (volume, connected status)
+    let device = state.device_state.read().await;
+    if let Some(obj) = status.as_object_mut() {
+        obj.insert("volume".to_string(), serde_json::json!(device.volume));
+        obj.insert("volume_display_active".to_string(), serde_json::json!(device.is_volume_display_active()));
+        obj.insert("connected".to_string(), serde_json::json!(device.connected));
     }
+
+    Json(ApiResponse::ok(status))
 }
 
 /// Parse Giphy API response into our GiphyGif format

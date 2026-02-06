@@ -375,8 +375,14 @@ fn draw_quadrant_model(img: &mut RgbImage, font: &Font, state: &AppState) {
     }
 }
 
-/// Bottom-right quadrant: Status/hints
+/// Bottom-right quadrant: Status/hints (or volume overlay)
 fn draw_quadrant_status(img: &mut RgbImage, font: &Font, state: &AppState) {
+    // Show volume overlay if active
+    if state.is_volume_display_active() {
+        draw_quadrant_volume(img, font, state);
+        return;
+    }
+
     let x = QUAD_WIDTH + PADDING;
     let y_label = QUAD_HEIGHT + 6;
     let y_value = QUAD_HEIGHT + 26;
@@ -419,6 +425,56 @@ fn draw_quadrant_status(img: &mut RgbImage, font: &Font, state: &AppState) {
     };
 
     draw_text(img, font, status_text, x, y_value, VALUE_SIZE, status_color);
+}
+
+/// Bottom-right quadrant: Volume overlay (shown for 2s after encoder rotation)
+fn draw_quadrant_volume(img: &mut RgbImage, font: &Font, state: &AppState) {
+    let x = QUAD_WIDTH + PADDING;
+    let y_label = QUAD_HEIGHT + 6;
+
+    // Label + percentage
+    draw_text(img, font, "VOLUME", x, y_label, LABEL_SIZE, GRAY);
+
+    let volume = state.volume;
+    let pct_text = if volume == 0 {
+        "MUTED".to_string()
+    } else {
+        format!("{}%", volume)
+    };
+
+    let pct_color = if volume == 0 {
+        RED
+    } else if volume > 80 {
+        ORANGE
+    } else {
+        GREEN
+    };
+
+    let pct_width = text_width(font, &pct_text, LABEL_SIZE);
+    let pct_x = QUAD_WIDTH * 2 - PADDING - pct_width;
+    draw_text(img, font, &pct_text, pct_x, y_label, LABEL_SIZE, pct_color);
+
+    // Progress bar
+    let bar_x = (QUAD_WIDTH + PADDING) as u32;
+    let bar_y = (QUAD_HEIGHT + 28) as u32;
+    let bar_w = (QUAD_WIDTH - PADDING * 2) as u32;
+    let bar_h = 24u32;
+
+    // Bar background
+    draw_filled_rect(img, bar_x, bar_y, bar_w, bar_h, Rgb([30, 32, 42]));
+
+    // Filled portion
+    let fill_w = (bar_w as f32 * volume as f32 / 100.0) as u32;
+    if fill_w > 0 {
+        let bar_color = if volume == 0 {
+            RED
+        } else if volume > 80 {
+            ORANGE
+        } else {
+            GREEN
+        };
+        draw_filled_rect(img, bar_x, bar_y, fill_w, bar_h, bar_color);
+    }
 }
 
 /// Compact model selector for bottom-left quadrant

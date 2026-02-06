@@ -8,8 +8,8 @@ with LCD buttons and rotary encoders.
 ## Features
 
 - **10 LCD buttons** with custom labels, emojis, images, or animated GIFs
-- **4 rotary encoders** for scrolling, model selection, and navigation
-- **LCD strip** showing connection status, current model, task info, and mic status
+- **4 rotary encoders** for brightness, model selection, history navigation, and system volume
+- **LCD strip** showing connection status, current model, task info, and volume overlay
 - **Web configuration UI** for customizing buttons and profiles
 - **Multi-app profiles** - automatically switches button layouts based on focused app
 - **Custom keyboard shortcuts** - configure any key with modifiers (⌘⇧⌥⌃)
@@ -98,7 +98,7 @@ Claude Deck includes a built-in web server for configuring buttons and profiles.
 
 ┌─────────────────────────────────────────────────────────────┐
 │  (Encoder 0)  (Encoder 1)  (Encoder 2)  (Encoder 3)         │
-│   Scroll       Model        History      Reserved           │
+│   Volume        Model        History     Brightness         │
 └─────────────────────────────────────────────────────────────┘
 
 ┌─────────────────────────────────────────────────────────────┐
@@ -145,10 +145,12 @@ Claude Deck includes a built-in web server for configuring buttons and profiles.
 
 | Encoder             | Rotate                          | Press                                           |
 |---------------------|---------------------------------|-------------------------------------------------|
-| **0** (Brightness)  | Adjust brightness (±10%)        | Replay startup animation                        |
+| **0** (Volume)      | Adjust system volume (±5%)      | Replay startup animation                        |
 | **1** (Model)       | Cycle through opus/sonnet/haiku | Confirm model selection (sends `/model {name}`) |
 | **2** (History)     | Navigate history (Up/Down)      | Select option (Enter)                           |
-| **3**               | -                               | Jump to bottom (End)                            |
+| **3** (Brightness)  | Adjust brightness (±20%)        | Jump to bottom (End)                            |
+
+The leftmost encoder controls macOS system volume. A volume overlay with a color-coded progress bar appears on the LCD strip for 2 seconds after each adjustment (green normally, orange above 80%, red when muted). The volume state also syncs with external changes made via macOS keyboard shortcuts or menu bar.
 
 ## LCD Strip Panels
 
@@ -159,9 +161,9 @@ The LCD strip shows 4 status quadrants:
 | **TASK**   | Current task name from Claude Code hooks (e.g., "Bash", "Thinking") |
 | **DETAIL** | Additional context - tool being used, file path, etc.    |
 | **MODEL**  | Current model (OPUS/SONNET/HAIKU) with selection UI      |
-| **STATUS** | Connection indicator (CONNECTED/OFFLINE/LOCKED)          |
+| **STATUS** | Connection indicator (CONNECTED/OFFLINE/LOCKED) or volume overlay |
 
-When the macOS screen is locked, STATUS shows "LOCKED" and all button input is disabled for security.
+When the leftmost encoder is rotated, STATUS temporarily shows a volume bar with percentage for 2 seconds before reverting to the connection indicator. When the macOS screen is locked, STATUS shows "LOCKED" and all button input is disabled for security.
 
 ## Multi-App Support
 
@@ -314,7 +316,7 @@ claude-deck/
 │   │   ├── handlers.rs  # API endpoints
 │   │   └── types.rs     # API types
 │   └── system/          # OS integration
-│       └── mod.rs       # Focused app detection (macOS)
+│       └── mod.rs       # Focused app detection, volume control, lock screen (macOS)
 ├── assets/
 │   ├── fonts/           # Embedded fonts
 │   ├── emoji/           # Twemoji images for button display

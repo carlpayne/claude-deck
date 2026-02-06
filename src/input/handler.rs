@@ -225,9 +225,10 @@ impl InputHandler {
         debug!("Encoder {} rotated: {}", encoder, direction);
 
         match encoder {
-            0 => self.adjust_brightness(direction).await,
+            0 => self.adjust_volume(direction).await,
             1 => self.cycle_model(direction).await,
             2 => self.navigate_history(direction),
+            3 => self.adjust_brightness(direction).await,
             _ => {}
         }
 
@@ -420,6 +421,12 @@ impl InputHandler {
         let mut state = self.state.write().await;
         let brightness = state.adjust_brightness(direction);
         debug!("Brightness: {}%", brightness);
+    }
+
+    async fn adjust_volume(&mut self, direction: i8) {
+        let mut state = self.state.write().await;
+        let volume = state.adjust_volume(direction);
+        debug!("Volume: {}%", volume);
     }
 
     fn navigate_history(&mut self, direction: i8) {

@@ -102,16 +102,21 @@ async fn main() -> Result<()> {
     // Create app command channel for triggering refreshes
     let (app_cmd_tx, app_cmd_rx) = mpsc::channel::<AppCommand>(16);
 
+    // Create shared device state before web server so both can access it
+    let config_snapshot = config.read().await.clone();
+    let device_state = App::create_state(&config_snapshot);
+
     // Spawn web server if enabled
     let web_enabled = config.read().await.web.enabled;
     if web_enabled {
         let config_clone = Arc::clone(&config);
         let profile_manager_clone = Arc::clone(&profile_manager);
         let change_tx_clone = change_tx.clone();
+        let device_state_clone = Arc::clone(&device_state);
 
         tokio::spawn(async move {
             if let Err(e) =
-                web::start_server(config_clone, profile_manager_clone, change_tx_clone).await
+                web::start_server(config_clone, profile_manager_clone, change_tx_clone, device_state_clone).await
             {
                 warn!("Web server error: {}", e);
             }
@@ -130,8 +135,7 @@ async fn main() -> Result<()> {
     });
 
     // Run the application with graceful shutdown
-    let config_snapshot = config.read().await.clone();
-    let mut app = App::new(config_snapshot, Arc::clone(&profile_manager), app_cmd_rx).await?;
+    let mut app = App::new(config_snapshot, Arc::clone(&profile_manager), app_cmd_rx, device_state).await?;
 
     // Set up signal handlers for graceful shutdown
     let mut sigterm = signal::unix::signal(signal::unix::SignalKind::terminate())?;

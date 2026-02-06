@@ -49,3 +49,49 @@ pub async fn is_screen_locked() -> bool {
 pub async fn is_screen_locked() -> bool {
     false
 }
+
+/// Get the current system output volume (0-100)
+#[cfg(target_os = "macos")]
+pub async fn get_system_volume() -> Option<u8> {
+    let output = match Command::new("osascript")
+        .arg("-e")
+        .arg("output volume of (get volume settings)")
+        .output()
+        .await
+    {
+        Ok(output) => output,
+        Err(e) => {
+            warn!("Failed to get system volume: {}", e);
+            return None;
+        }
+    };
+
+    if output.status.success() {
+        let vol_str = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        vol_str.parse::<u8>().ok()
+    } else {
+        None
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub async fn get_system_volume() -> Option<u8> {
+    None
+}
+
+/// Set the system output volume (0-100)
+#[cfg(target_os = "macos")]
+pub async fn set_system_volume(volume: u8) {
+    let volume = volume.min(100);
+    if let Err(e) = Command::new("osascript")
+        .arg("-e")
+        .arg(format!("set volume output volume {}", volume))
+        .output()
+        .await
+    {
+        warn!("Failed to set system volume: {}", e);
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+pub async fn set_system_volume(_volume: u8) {}
