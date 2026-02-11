@@ -261,7 +261,7 @@ impl App {
 
         // Track last device write to enforce cooldown (HID device needs time between operations)
         let mut last_device_write = std::time::Instant::now();
-        let device_cooldown = std::time::Duration::from_millis(20); // Min gap between device operations
+        let device_cooldown = std::time::Duration::from_millis(10); // Min gap between device operations
 
         // Track volume/brightness overlay state to refresh display when they expire
         let mut volume_overlay_was_active = false;
@@ -527,21 +527,21 @@ impl App {
             // Read game_active once for all checks below
             let game_is_active = self.game.is_some();
 
-            // Game tick (~16ms) - update game state and render dirty buttons
+            // Game tick (~16ms) - update game state
             if game_is_active && last_game_tick.elapsed() >= game_tick_interval {
                 last_game_tick = std::time::Instant::now();
-                // Advance game state (movement, animations)
                 self.game.as_mut().unwrap().tick();
-                // Render any dirty state when device cooldown allows
-                // (decoupled from tick so renders aren't lost when cooldown blocks)
-                if self.game.as_ref().unwrap().has_any_dirty()
-                    && last_device_write.elapsed() >= device_cooldown
-                {
-                    if let Err(e) = self.update_game_display().await {
-                        debug!("Failed to update game display: {}", e);
-                    }
-                    last_device_write = std::time::Instant::now();
+            }
+
+            // Render dirty game state as soon as device cooldown allows (independent of tick)
+            if game_is_active
+                && self.game.as_ref().unwrap().has_any_dirty()
+                && last_device_write.elapsed() >= device_cooldown
+            {
+                if let Err(e) = self.update_game_display().await {
+                    debug!("Failed to update game display: {}", e);
                 }
+                last_device_write = std::time::Instant::now();
             }
 
             // Flash the LCD strip when waiting for user input (skip during game)

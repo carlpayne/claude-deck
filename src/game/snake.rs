@@ -153,6 +153,9 @@ pub struct SnakeGame {
     // Dirty tracking
     dirty_buttons: [bool; 10],
     strip_dirty: bool,
+
+    // Pre-rendered base button images (BG + grid lines + wall hints)
+    base_buttons: Vec<RgbImage>,
 }
 
 impl Default for SnakeGame {
@@ -164,6 +167,19 @@ impl Default for SnakeGame {
 impl SnakeGame {
     pub fn new() -> Self {
         let now = Instant::now();
+
+        // Pre-render base button images (BG + grid lines + wall hints)
+        let base_buttons: Vec<RgbImage> = (0..10)
+            .map(|bid: usize| {
+                let mut img = RgbImage::from_pixel(BUTTON_WIDTH, BUTTON_HEIGHT, BG_COLOR);
+                let grid_x0 = (bid % 5) * CELLS_PER_BUTTON;
+                let grid_y0 = (bid / 5) * CELLS_PER_BUTTON;
+                draw_grid_lines(&mut img);
+                draw_wall_hints(&mut img, grid_x0, grid_y0);
+                img
+            })
+            .collect();
+
         let mut game = Self {
             snake: VecDeque::new(),
             body_set: HashSet::with_capacity(GRID_COLS * GRID_ROWS),
@@ -184,6 +200,7 @@ impl SnakeGame {
             last_death_frame: now,
             dirty_buttons: [true; 10],
             strip_dirty: true,
+            base_buttons,
         };
         game.setup_title();
         game
@@ -327,8 +344,8 @@ impl SnakeGame {
                 self.high_score = self.score;
             }
             // Speed up: decrease interval by 10ms per food, min 80ms
-            if self.move_interval_ms > 80 {
-                self.move_interval_ms = (self.move_interval_ms - 10).max(80);
+            if self.move_interval_ms > 50 {
+                self.move_interval_ms = (self.move_interval_ms - 10).max(50);
             }
             self.strip_dirty = true;
             self.spawn_food();
@@ -437,12 +454,8 @@ impl SnakeGame {
             return RgbImage::new(BUTTON_WIDTH, BUTTON_HEIGHT);
         }
 
-        let mut img = RgbImage::new(BUTTON_WIDTH, BUTTON_HEIGHT);
-
-        // Fill background
-        for pixel in img.pixels_mut() {
-            *pixel = BG_COLOR;
-        }
+        // Clone pre-rendered base (BG + grid lines + wall hints already drawn)
+        let mut img = self.base_buttons[bid].clone();
 
         // Grid region for this button
         let grid_x0 = (bid % 5) * CELLS_PER_BUTTON;
@@ -459,12 +472,6 @@ impl SnakeGame {
                 self.render_gameover_button(&mut img, grid_x0, grid_y0);
             }
         }
-
-        // Draw grid lines (1px gaps between cells)
-        self.draw_grid_lines(&mut img);
-
-        // Draw wall hints on edge buttons
-        self.draw_wall_hints(&mut img, grid_x0, grid_y0);
 
         img
     }
@@ -588,68 +595,9 @@ impl SnakeGame {
         }
     }
 
-    fn draw_grid_lines(&self, img: &mut RgbImage) {
-        // Draw subtle grid lines in the gaps between cells
-        for i in 1..CELLS_PER_BUTTON {
-            let pos = i as u32 * CELL_PITCH;
-            // Vertical lines (in the 2px gap: at pos-2 and pos-1)
-            if pos >= 1 {
-                for y in 0..BUTTON_HEIGHT {
-                    let gx = pos - 1;
-                    if gx < BUTTON_WIDTH {
-                        img.put_pixel(gx, y, GRID_COLOR);
-                    }
-                }
-            }
-            // Horizontal lines
-            if pos >= 1 {
-                for x in 0..BUTTON_WIDTH {
-                    let gy = pos - 1;
-                    if gy < BUTTON_HEIGHT {
-                        img.put_pixel(x, gy, GRID_COLOR);
-                    }
-                }
-            }
-        }
-    }
-
-    fn draw_wall_hints(&self, img: &mut RgbImage, grid_x0: usize, grid_y0: usize) {
-        // Left edge
-        if grid_x0 == 0 {
-            for y in 0..BUTTON_HEIGHT {
-                img.put_pixel(0, y, WALL_HINT);
-            }
-        }
-        // Right edge
-        if grid_x0 + CELLS_PER_BUTTON >= GRID_COLS {
-            let x = BUTTON_WIDTH - 1;
-            for y in 0..BUTTON_HEIGHT {
-                img.put_pixel(x, y, WALL_HINT);
-            }
-        }
-        // Top edge
-        if grid_y0 == 0 {
-            for x in 0..BUTTON_WIDTH {
-                img.put_pixel(x, 0, WALL_HINT);
-            }
-        }
-        // Bottom edge
-        if grid_y0 + CELLS_PER_BUTTON >= GRID_ROWS {
-            let y = BUTTON_HEIGHT - 1;
-            for x in 0..BUTTON_WIDTH {
-                img.put_pixel(x, y, WALL_HINT);
-            }
-        }
-    }
-
     /// Render the LCD strip HUD (800x128)
     pub fn render_strip(&self, font: &Font) -> RgbImage {
-        let mut img = RgbImage::new(STRIP_WIDTH, STRIP_HEIGHT);
-
-        // Fill background
-        for pixel in img.pixels_mut() {
-            *pixel = STRIP_BG;
-        }
+        let mut img = RgbImage::from_pixel(STRIP_WIDTH, STRIP_HEIGHT, STRIP_BG);
 
         match self.state {
             GameState::Title => {
@@ -718,8 +666,8 @@ impl SnakeGame {
         // Bar background
         draw_filled_rect(img, bar_x, bar_y, bar_w, bar_h, Rgb([30, 32, 42]));
 
-        // Speed percentage: 250ms = 0%, 80ms = 100%
-        let speed_pct = ((250.0 - self.move_interval_ms as f32) / (250.0 - 80.0)).clamp(0.0, 1.0);
+        // Speed percentage: 250ms = 0%, 50ms = 100%
+        let speed_pct = ((250.0 - self.move_interval_ms as f32) / (250.0 - 50.0)).clamp(0.0, 1.0);
         let fill_w = (bar_w as f32 * speed_pct) as u32;
         if fill_w > 0 {
             // Color gradient from green to yellow to red
@@ -800,6 +748,53 @@ impl SnakeGame {
             let rw = text_width(font, restart, 14.0);
             let rx = ((STRIP_WIDTH as i32 - rw) / 2).max(0);
             draw_text(img, font, restart, rx, 95, 14.0, Rgb([80, 90, 110]));
+        }
+    }
+}
+
+/// Draw subtle grid lines in the gaps between cells (used for base button cache)
+fn draw_grid_lines(img: &mut RgbImage) {
+    for i in 1..CELLS_PER_BUTTON {
+        let pos = i as u32 * CELL_PITCH;
+        if pos >= 1 {
+            for y in 0..BUTTON_HEIGHT {
+                let gx = pos - 1;
+                if gx < BUTTON_WIDTH {
+                    img.put_pixel(gx, y, GRID_COLOR);
+                }
+            }
+            for x in 0..BUTTON_WIDTH {
+                let gy = pos - 1;
+                if gy < BUTTON_HEIGHT {
+                    img.put_pixel(x, gy, GRID_COLOR);
+                }
+            }
+        }
+    }
+}
+
+/// Draw wall hints on edge buttons (used for base button cache)
+fn draw_wall_hints(img: &mut RgbImage, grid_x0: usize, grid_y0: usize) {
+    if grid_x0 == 0 {
+        for y in 0..BUTTON_HEIGHT {
+            img.put_pixel(0, y, WALL_HINT);
+        }
+    }
+    if grid_x0 + CELLS_PER_BUTTON >= GRID_COLS {
+        let x = BUTTON_WIDTH - 1;
+        for y in 0..BUTTON_HEIGHT {
+            img.put_pixel(x, y, WALL_HINT);
+        }
+    }
+    if grid_y0 == 0 {
+        for x in 0..BUTTON_WIDTH {
+            img.put_pixel(x, 0, WALL_HINT);
+        }
+    }
+    if grid_y0 + CELLS_PER_BUTTON >= GRID_ROWS {
+        let y = BUTTON_HEIGHT - 1;
+        for x in 0..BUTTON_WIDTH {
+            img.put_pixel(x, y, WALL_HINT);
         }
     }
 }
