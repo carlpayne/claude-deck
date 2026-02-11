@@ -316,9 +316,19 @@ impl App {
                 // Skip input handling when screen is locked (security)
                 let is_locked = self.state.read().await.screen_locked;
                 if !is_locked {
+                    // During game: drain ALL pending events before rendering
+                    // (prevents input lag while device writes are in progress)
                     if self.game.is_some() {
-                        // Route input to game
-                        self.handle_game_input(&event).await;
+                        // Collect all queued events first (avoids borrow conflict)
+                        let mut events = vec![event];
+                        if let Some(ref mut device) = self.device {
+                            while let Ok(Some(extra)) = device.poll_event().await {
+                                events.push(extra);
+                            }
+                        }
+                        for ev in &events {
+                            self.handle_game_input(ev).await;
+                        }
                         last_device_write = std::time::Instant::now();
                     } else {
                         // Check if encoder 3 press should start a game
