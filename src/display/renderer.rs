@@ -75,6 +75,11 @@ impl DisplayRenderer {
         })
     }
 
+    /// Get a reference to the loaded font
+    pub fn font(&self) -> &Font<'static> {
+        &self.font
+    }
+
     /// Render a button image
     pub fn render_button(&self, button_id: u8, active: bool, state: &AppState) -> Result<RgbImage> {
         use crate::profiles::ButtonAction;

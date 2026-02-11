@@ -85,6 +85,11 @@ pub struct AppState {
     /// When to stop showing the brightness overlay on the LCD strip
     #[serde(skip)]
     pub brightness_display_until: Option<Instant>,
+
+    // Game state
+    /// Snake game is currently active (overrides normal display)
+    #[serde(skip)]
+    pub game_active: bool,
 }
 
 impl Default for AppState {
@@ -122,6 +127,7 @@ impl AppState {
             volume_changed: false,
             volume_display_until: None,
             brightness_display_until: None,
+            game_active: false,
         }
     }
 
@@ -165,6 +171,7 @@ impl AppState {
             volume_changed: false,
             volume_display_until: None,
             brightness_display_until: None,
+            game_active: false,
         }
     }
 

@@ -15,6 +15,7 @@ with LCD buttons and rotary encoders.
 - **Custom keyboard shortcuts** - configure any key with modifiers (⌘⇧⌥⌃)
 - **Voice dictation** integration via macOS dictation (double-tap Right Command)
 - **Claude Code hooks** for real-time status updates
+- **Snake game** - built-in snake game rendered across all 10 LCD buttons, controlled by encoder rotation
 - **Startup animation** - rainbow wave effect on device connect
 - **Auto-reconnect** - gracefully handles device disconnect/reconnect
 - **Lock screen detection** - automatically disables input when macOS is locked
@@ -148,7 +149,7 @@ Claude Deck includes a built-in web server for configuring buttons and profiles.
 | **0** (Volume)      | Adjust system volume (±5%)      | Replay startup animation                        |
 | **1** (Model)       | Cycle through opus/sonnet/haiku | Confirm model selection (sends `/model {name}`) |
 | **2** (History)     | Navigate history (Up/Down)      | Select option (Enter)                           |
-| **3** (Brightness)  | Adjust brightness (±20%)        | Jump to bottom (End)                            |
+| **3** (Brightness)  | Adjust brightness (±5%)         | Start/exit Snake game                           |
 
 The leftmost encoder controls macOS system volume. A volume overlay with a color-coded progress bar appears on the LCD strip for 2 seconds after each adjustment (green normally, orange above 80%, red when muted). The volume state also syncs with external changes made via macOS keyboard shortcuts or menu bar.
 
@@ -164,6 +165,16 @@ The LCD strip shows 4 status quadrants:
 | **STATUS** | Connection indicator (CONNECTED/OFFLINE/LOCKED) or volume overlay |
 
 When the leftmost encoder is rotated, STATUS temporarily shows a volume bar with percentage for 2 seconds before reverting to the connection indicator. When the macOS screen is locked, STATUS shows "LOCKED" and all button input is disabled for security.
+
+## Snake Game
+
+Press encoder 3 (rightmost) to launch a Snake game that renders across all 10 LCD buttons.
+
+- **Any encoder rotation** turns the snake left (CCW) or right (CW) relative to its current direction
+- **Any button press** starts the game from the title or game-over screen
+- **Encoder 3 press** exits back to normal mode
+
+The LCD strip shows score, direction, speed bar, and high score during gameplay. The snake speeds up with each food eaten (4.0 moves/sec up to 12.5 moves/sec). Normal button profiles and animations are suppressed while the game is active.
 
 ## Multi-App Support
 
@@ -301,6 +312,8 @@ claude-deck/
 │   │   ├── emoji.rs     # Twemoji rendering
 │   │   ├── gif.rs       # GIF animation support
 │   │   └── strip.rs     # LCD strip panels
+│   ├── game/            # Snake game
+│   │   └── mod.rs       # Game logic, grid rendering, HUD
 │   ├── input/           # Input handling
 │   │   ├── handler.rs   # Event processing
 │   │   └── keystrokes.rs# Keystroke injection

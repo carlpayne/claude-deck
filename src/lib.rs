@@ -1,6 +1,7 @@
 pub mod config;
 pub mod device;
 pub mod display;
+pub mod game;
 pub mod hooks;
 pub mod input;
 pub mod profiles;
@@ -39,6 +40,8 @@ pub struct App {
     profile_manager: Arc<StdRwLock<ProfileManager>>,
     /// Channel to receive commands (e.g., refresh from web UI)
     command_rx: mpsc::Receiver<AppCommand>,
+    /// Snake game instance (Some when game is active)
+    game: Option<game::SnakeGame>,
 }
 
 impl App {
@@ -100,6 +103,7 @@ impl App {
             input,
             profile_manager,
             command_rx,
+            game: None,
         })
     }
 
@@ -252,6 +256,9 @@ impl App {
         let mut last_waiting_flash = std::time::Instant::now();
         let waiting_flash_interval = std::time::Duration::from_millis(500); // Pulse every 500ms
 
+        let mut last_game_tick = std::time::Instant::now();
+        let game_tick_interval = std::time::Duration::from_millis(16); // ~60 FPS game tick
+
         // Track last device write to enforce cooldown (HID device needs time between operations)
         let mut last_device_write = std::time::Instant::now();
         let device_cooldown = std::time::Duration::from_millis(20); // Min gap between device operations
@@ -265,13 +272,15 @@ impl App {
             while let Ok(cmd) = self.command_rx.try_recv() {
                 match cmd {
                     AppCommand::RedrawButtons => {
-                        info!("Received redraw command from web UI");
-                        // Small delay to let any pending device operations complete
-                        tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
-                        if let Err(e) = self.redraw_all_buttons().await {
-                            warn!("Failed to redraw buttons from web UI: {}", e);
+                        if !self.state.read().await.game_active {
+                            info!("Received redraw command from web UI");
+                            // Small delay to let any pending device operations complete
+                            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                            if let Err(e) = self.redraw_all_buttons().await {
+                                warn!("Failed to redraw buttons from web UI: {}", e);
+                            }
+                            last_device_write = std::time::Instant::now();
                         }
-                        last_device_write = std::time::Instant::now();
                     }
                 }
             }
@@ -307,13 +316,25 @@ impl App {
                 // Skip input handling when screen is locked (security)
                 let is_locked = self.state.read().await.screen_locked;
                 if !is_locked {
-                    if let Err(e) = self.input.handle_event(event).await {
-                        warn!("Failed to handle input event: {}", e);
+                    if self.game.is_some() {
+                        // Route input to game
+                        self.handle_game_input(&event).await;
+                        last_device_write = std::time::Instant::now();
+                    } else {
+                        // Check if encoder 3 press should start the game
+                        if matches!(event, device::InputEvent::EncoderPress(3)) {
+                            self.start_game().await;
+                            last_device_write = std::time::Instant::now();
+                        } else {
+                            if let Err(e) = self.input.handle_event(event).await {
+                                warn!("Failed to handle input event: {}", e);
+                            }
+                            if let Err(e) = self.update_display().await {
+                                debug!("Failed to update display: {}", e);
+                            }
+                            last_device_write = std::time::Instant::now();
+                        }
                     }
-                    if let Err(e) = self.update_display().await {
-                        debug!("Failed to update display: {}", e);
-                    }
-                    last_device_write = std::time::Instant::now();
                 } else {
                     // Silently ignore input when locked
                     continue;
@@ -353,10 +374,10 @@ impl App {
                     });
                 }
 
-                // Check if intro animation was requested
+                // Check if intro animation was requested (only when game not active)
                 let play_intro = {
                     let mut state = self.state.write().await;
-                    let flag = state.play_intro;
+                    let flag = state.play_intro && !state.game_active;
                     state.play_intro = false;
                     flag
                 };
@@ -393,11 +414,11 @@ impl App {
                 _ => {}
             }
 
-            // Poll Claude Code status file periodically
+            // Poll Claude Code status file periodically (skip display update during game)
             if last_status_check.elapsed() >= status_check_interval {
                 last_status_check = std::time::Instant::now();
                 match self.update_from_claude_status().await {
-                    Ok(true) => {
+                    Ok(true) if !self.state.read().await.game_active => {
                         if let Err(e) = self.update_display().await {
                             debug!("Failed to update display after status change: {}", e);
                         }
@@ -417,9 +438,13 @@ impl App {
                         if state.focused_app != app {
                             info!("Focused app changed: '{}' -> '{}'", state.focused_app, app);
                             state.focused_app = app;
+                            let game_active = state.game_active;
                             drop(state); // Release lock before redraw
-                            if let Err(e) = self.redraw_all_buttons().await {
-                                warn!("Failed to redraw buttons on app change: {}", e);
+                            // Skip button redraw during game (game owns the display)
+                            if !game_active {
+                                if let Err(e) = self.redraw_all_buttons().await {
+                                    warn!("Failed to redraw buttons on app change: {}", e);
+                                }
                             }
                             last_device_write = std::time::Instant::now();
                         }
@@ -450,12 +475,17 @@ impl App {
                     } else {
                         info!("Screen unlocked - input enabled");
                     }
-                    // Update ALL buttons and strip to show locked/unlocked state
-                    if let Err(e) = self.redraw_all_buttons().await {
-                        warn!("Failed to redraw buttons for lock state: {}", e);
-                    }
-                    if let Err(e) = self.update_display().await {
-                        warn!("Failed to update strip for lock state: {}", e);
+                    // Update ALL buttons and strip to show locked/unlocked state (skip during game)
+                    if !self.state.read().await.game_active {
+                        if let Err(e) = self.redraw_all_buttons().await {
+                            warn!("Failed to redraw buttons for lock state: {}", e);
+                        }
+                        if let Err(e) = self.update_display().await {
+                            warn!("Failed to update strip for lock state: {}", e);
+                        }
+                    } else if is_locked {
+                        // If locked during game, exit game
+                        self.exit_game().await;
                     }
                     last_device_write = std::time::Instant::now();
                 }
@@ -484,8 +514,28 @@ impl App {
                 }));
             }
 
-            // Flash the LCD strip when waiting for user input
-            if last_waiting_flash.elapsed() >= waiting_flash_interval {
+            // Read game_active once for all checks below
+            let game_is_active = self.game.is_some();
+
+            // Game tick (~16ms) - update game state and render dirty buttons
+            if game_is_active && last_game_tick.elapsed() >= game_tick_interval {
+                last_game_tick = std::time::Instant::now();
+                // Advance game state (movement, animations)
+                self.game.as_mut().unwrap().tick();
+                // Render any dirty state when device cooldown allows
+                // (decoupled from tick so renders aren't lost when cooldown blocks)
+                if self.game.as_ref().unwrap().has_any_dirty()
+                    && last_device_write.elapsed() >= device_cooldown
+                {
+                    if let Err(e) = self.update_game_display().await {
+                        debug!("Failed to update game display: {}", e);
+                    }
+                    last_device_write = std::time::Instant::now();
+                }
+            }
+
+            // Flash the LCD strip when waiting for user input (skip during game)
+            if !game_is_active && last_waiting_flash.elapsed() >= waiting_flash_interval {
                 last_waiting_flash = std::time::Instant::now();
                 let mut state = self.state.write().await;
                 if state.waiting_for_input {
@@ -502,10 +552,9 @@ impl App {
             }
 
             // Check if volume overlay just expired (transition active→inactive)
-            {
+            if !game_is_active {
                 let volume_overlay_active = self.state.read().await.is_volume_display_active();
                 if volume_overlay_was_active && !volume_overlay_active {
-                    // Overlay just expired, refresh display to restore STATUS quadrant
                     if let Err(e) = self.update_display().await {
                         debug!("Failed to update display after volume overlay expired: {}", e);
                     }
@@ -515,10 +564,9 @@ impl App {
             }
 
             // Check if brightness overlay just expired (transition active→inactive)
-            {
+            if !game_is_active {
                 let brightness_overlay_active = self.state.read().await.is_brightness_display_active();
                 if brightness_overlay_was_active && !brightness_overlay_active {
-                    // Overlay just expired, refresh display to restore DETAIL quadrant
                     if let Err(e) = self.update_display().await {
                         debug!("Failed to update display after brightness overlay expired: {}", e);
                     }
@@ -527,8 +575,9 @@ impl App {
                 brightness_overlay_was_active = brightness_overlay_active;
             }
 
-            // Update GIF animations (respect device cooldown to avoid HID conflicts)
-            if last_gif_tick.elapsed() >= gif_tick_interval
+            // Update GIF animations (respect device cooldown, skip during game)
+            if !game_is_active
+                && last_gif_tick.elapsed() >= gif_tick_interval
                 && last_device_write.elapsed() >= device_cooldown
             {
                 last_gif_tick = std::time::Instant::now();
@@ -764,6 +813,122 @@ impl App {
             device.set_button_image(display_key, image).await?;
         }
         device.flush().await?;
+
+        Ok(())
+    }
+
+    // --- Snake game methods ---
+
+    /// Start the snake game
+    async fn start_game(&mut self) {
+        info!("Starting snake game");
+        self.game = Some(game::SnakeGame::new());
+        self.state.write().await.game_active = true;
+        self.render_full_game().await;
+    }
+
+    /// Exit the snake game and restore normal display
+    async fn exit_game(&mut self) {
+        info!("Exiting snake game");
+        self.game = None;
+        self.state.write().await.game_active = false;
+        // Restore normal display
+        if let Err(e) = self.redraw_all_buttons().await {
+            warn!("Failed to redraw buttons after game exit: {}", e);
+        }
+        if let Err(e) = self.update_display().await {
+            warn!("Failed to update display after game exit: {}", e);
+        }
+    }
+
+    /// Handle input events during game
+    async fn handle_game_input(&mut self, event: &device::InputEvent) {
+        match event {
+            device::InputEvent::EncoderPress(3) => {
+                // Encoder 3 press: exit game
+                self.exit_game().await;
+            }
+            device::InputEvent::EncoderRotate { direction, .. } => {
+                // Any encoder rotation: turn snake
+                if let Some(ref mut game) = self.game {
+                    game.handle_encoder_rotate(*direction);
+                }
+            }
+            device::InputEvent::ButtonUp(_) => {
+                // Any button press: start game from title/gameover
+                if let Some(ref mut game) = self.game {
+                    game.handle_button_press();
+                    // If state changed to playing, render full game
+                    if game.game_state() == game::GameState::Playing {
+                        self.render_full_game().await;
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Render all 10 buttons + strip for the game (full redraw)
+    async fn render_full_game(&mut self) {
+        let device = match self.device.as_ref() {
+            Some(d) => d,
+            None => return,
+        };
+
+        if let Some(ref mut game) = self.game {
+            // Render all buttons
+            for button_id in 0..10u8 {
+                let display_key = device::button_to_display_key(button_id);
+                let image = game.render_button(button_id);
+                if let Err(e) = device.set_button_image(display_key, image).await {
+                    debug!("Failed to set game button image: {}", e);
+                }
+            }
+
+            // Render strip
+            let strip_image = game.render_strip(self.display.font());
+            if let Err(e) = device.set_strip_image(strip_image).await {
+                debug!("Failed to set game strip image: {}", e);
+            }
+
+            game.clear_dirty();
+            device.flush().await.ok();
+        }
+    }
+
+    /// Render only dirty buttons + strip for the game (incremental update)
+    async fn update_game_display(&mut self) -> anyhow::Result<()> {
+        let device = match self.device.as_ref() {
+            Some(d) => d,
+            None => return Ok(()),
+        };
+
+        if let Some(ref mut game) = self.game {
+            let mut any_sent = false;
+
+            // Update dirty buttons
+            for button_id in 0..10u8 {
+                if game.is_button_dirty(button_id) {
+                    let display_key = device::button_to_display_key(button_id);
+                    let image = game.render_button(button_id);
+                    device.set_button_image(display_key, image).await?;
+                    any_sent = true;
+                }
+            }
+
+            // Update strip if dirty
+            if game.is_strip_dirty() {
+                let strip_image = game.render_strip(self.display.font());
+                device.set_strip_image(strip_image).await?;
+                any_sent = true;
+            }
+
+            game.clear_dirty();
+
+            if any_sent {
+                device.flush().await?;
+            }
+        }
 
         Ok(())
     }
