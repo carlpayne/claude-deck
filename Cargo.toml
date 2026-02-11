@@ -49,6 +49,9 @@ ureq = "2"
 # Base64 for custom image decoding
 base64 = "0.22"
 
+# Doom game engine
+doomgeneric = "0.3.0-beta.2"
+
 # Async HTTP client for Giphy API
 reqwest = { version = "0.12", features = ["json"] }
 

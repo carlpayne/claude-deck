@@ -16,6 +16,7 @@ with LCD buttons and rotary encoders.
 - **Voice dictation** integration via macOS dictation (double-tap Right Command)
 - **Claude Code hooks** for real-time status updates
 - **Snake game** - built-in snake game rendered across all 10 LCD buttons, controlled by encoder rotation
+- **Doom** - actual Doom (via doomgeneric) rendered across LCD buttons with encoder controls
 - **Startup animation** - rainbow wave effect on device connect
 - **Auto-reconnect** - gracefully handles device disconnect/reconnect
 - **Lock screen detection** - automatically disables input when macOS is locked
@@ -149,7 +150,7 @@ Claude Deck includes a built-in web server for configuring buttons and profiles.
 | **0** (Volume)      | Adjust system volume (±5%)      | Replay startup animation                        |
 | **1** (Model)       | Cycle through opus/sonnet/haiku | Confirm model selection (sends `/model {name}`) |
 | **2** (History)     | Navigate history (Up/Down)      | Select option (Enter)                           |
-| **3** (Brightness)  | Adjust brightness (±5%)         | Start/exit Snake game                           |
+| **3** (Brightness)  | Adjust brightness (±5%)         | Cycle games (Snake → Doom → exit)               |
 
 The leftmost encoder controls macOS system volume. A volume overlay with a color-coded progress bar appears on the LCD strip for 2 seconds after each adjustment (green normally, orange above 80%, red when muted). The volume state also syncs with external changes made via macOS keyboard shortcuts or menu bar.
 
@@ -166,15 +167,34 @@ The LCD strip shows 4 status quadrants:
 
 When the leftmost encoder is rotated, STATUS temporarily shows a volume bar with percentage for 2 seconds before reverting to the connection indicator. When the macOS screen is locked, STATUS shows "LOCKED" and all button input is disabled for security.
 
-## Snake Game
+## Games
 
-Press encoder 3 (rightmost) to launch a Snake game that renders across all 10 LCD buttons.
+Press encoder 3 (rightmost) to cycle through games: **Snake → Doom → exit**.
+
+### Snake
 
 - **Any encoder rotation** turns the snake left (CCW) or right (CW) relative to its current direction
 - **Any button press** starts the game from the title or game-over screen
-- **Encoder 3 press** exits back to normal mode
+- **Encoder 3 press** cycles to next game
 
-The LCD strip shows score, direction, speed bar, and high score during gameplay. The snake speeds up with each food eaten (4.0 moves/sec up to 12.5 moves/sec). Normal button profiles and animations are suppressed while the game is active.
+The LCD strip shows score, direction, speed bar, and high score during gameplay. The snake speeds up with each food eaten (4.0 moves/sec up to 12.5 moves/sec).
+
+### Doom
+
+Runs actual Doom (via the `doomgeneric` crate) across all 10 LCD buttons (560×224 viewport).
+
+| Input | Action |
+|---|---|
+| **Encoder 0** rotate | Move forward / backward |
+| **Encoder 1** rotate | Strafe right / left |
+| **Encoder 2** rotate | Turn right / left |
+| **Encoder 0/1/2 click** | Fire weapon |
+| **Button press** | Use (doors/switches) + Enter (menus) |
+| **Encoder 3 click** | Cycle to next game / exit |
+
+**Setup:** Place `doom1.wad` (shareware, ~4MB) in `~/.config/claude-deck/`. If no WAD is found, instructions are shown on the LCD strip.
+
+The Doom engine runs in a dedicated thread with frame data sent to the main loop via channels. Encoder movement uses sustained key-hold with 150ms auto-release for smooth continuous motion.
 
 ## Multi-App Support
 
@@ -312,8 +332,10 @@ claude-deck/
 │   │   ├── emoji.rs     # Twemoji rendering
 │   │   ├── gif.rs       # GIF animation support
 │   │   └── strip.rs     # LCD strip panels
-│   ├── game/            # Snake game
-│   │   └── mod.rs       # Game logic, grid rendering, HUD
+│   ├── game/            # Built-in games
+│   │   ├── mod.rs       # ActiveGame enum, delegation
+│   │   ├── snake.rs     # Snake game logic, grid rendering, HUD
+│   │   └── doom.rs      # Doom integration via doomgeneric
 │   ├── input/           # Input handling
 │   │   ├── handler.rs   # Event processing
 │   │   └── keystrokes.rs# Keystroke injection
@@ -347,6 +369,7 @@ claude-deck/
 - **rusttype** - Font rendering
 - **tokio** - Async runtime
 - **axum** - Web server for configuration UI
+- **doomgeneric** - Doom engine (doomgeneric C port)
 - **tracing** - Logging
 
 ## License

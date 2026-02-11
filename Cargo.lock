@@ -465,6 +465,7 @@ dependencies = [
  "axum",
  "base64",
  "clap",
+ "doomgeneric",
  "enigo",
  "image",
  "imageproc",
@@ -655,6 +656,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn",
+]
+
+[[package]]
+name = "doomgeneric"
+version = "0.3.0-beta.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5032a55321ddadc799d50cdde6430d485960e23e177878aab6a8227d1344c396"
+dependencies = [
+ "cc",
+ "once_cell",
 ]
 
 [[package]]

@@ -40,8 +40,8 @@ pub struct App {
     profile_manager: Arc<StdRwLock<ProfileManager>>,
     /// Channel to receive commands (e.g., refresh from web UI)
     command_rx: mpsc::Receiver<AppCommand>,
-    /// Snake game instance (Some when game is active)
-    game: Option<game::SnakeGame>,
+    /// Active game instance (Some when a game is active)
+    game: Option<game::ActiveGame>,
 }
 
 impl App {
@@ -321,9 +321,9 @@ impl App {
                         self.handle_game_input(&event).await;
                         last_device_write = std::time::Instant::now();
                     } else {
-                        // Check if encoder 3 press should start the game
+                        // Check if encoder 3 press should start a game
                         if matches!(event, device::InputEvent::EncoderPress(3)) {
-                            self.start_game().await;
+                            self.cycle_game().await;
                             last_device_write = std::time::Instant::now();
                         } else {
                             if let Err(e) = self.input.handle_event(event).await {
@@ -817,19 +817,32 @@ impl App {
         Ok(())
     }
 
-    // --- Snake game methods ---
+    // --- Game methods ---
 
-    /// Start the snake game
-    async fn start_game(&mut self) {
-        info!("Starting snake game");
-        self.game = Some(game::SnakeGame::new());
-        self.state.write().await.game_active = true;
-        self.render_full_game().await;
+    /// Cycle through games: None → Snake → Doom → None
+    async fn cycle_game(&mut self) {
+        match &self.game {
+            None => {
+                info!("Starting Snake game");
+                self.game = Some(game::ActiveGame::Snake(game::SnakeGame::new()));
+                self.state.write().await.game_active = true;
+                self.render_full_game().await;
+            }
+            Some(game::ActiveGame::Snake(_)) => {
+                info!("Switching to Doom");
+                self.game = Some(game::ActiveGame::Doom(game::DoomGame::new()));
+                self.state.write().await.game_active = true;
+                self.render_full_game().await;
+            }
+            Some(game::ActiveGame::Doom(_)) => {
+                self.exit_game().await;
+            }
+        }
     }
 
-    /// Exit the snake game and restore normal display
+    /// Exit the current game and restore normal display
     async fn exit_game(&mut self) {
-        info!("Exiting snake game");
+        info!("Exiting game");
         self.game = None;
         self.state.write().await.game_active = false;
         // Restore normal display
@@ -845,21 +858,27 @@ impl App {
     async fn handle_game_input(&mut self, event: &device::InputEvent) {
         match event {
             device::InputEvent::EncoderPress(3) => {
-                // Encoder 3 press: exit game
-                self.exit_game().await;
+                // Encoder 3 press: cycle to next game (Snake → Doom → None)
+                self.cycle_game().await;
             }
-            device::InputEvent::EncoderRotate { direction, .. } => {
-                // Any encoder rotation: turn snake
+            device::InputEvent::EncoderPress(encoder) => {
+                // Encoder 0/1/2 press: route to active game (fire in Doom)
                 if let Some(ref mut game) = self.game {
-                    game.handle_encoder_rotate(*direction);
+                    game.handle_encoder_press(*encoder);
                 }
             }
-            device::InputEvent::ButtonUp(_) => {
-                // Any button press: start game from title/gameover
+            device::InputEvent::EncoderRotate { encoder, direction } => {
+                // Route encoder rotation with ID to active game
                 if let Some(ref mut game) = self.game {
-                    game.handle_button_press();
-                    // If state changed to playing, render full game
-                    if game.game_state() == game::GameState::Playing {
+                    game.handle_encoder_rotate(*encoder, *direction);
+                }
+            }
+            device::InputEvent::ButtonUp(button_id) => {
+                // Route button press with ID to active game
+                if let Some(ref mut game) = self.game {
+                    game.handle_button_press(*button_id);
+                    // Render if game state changed (e.g. snake title→playing)
+                    if game.has_any_dirty() {
                         self.render_full_game().await;
                     }
                 }
