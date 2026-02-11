@@ -12,9 +12,10 @@ use doomgeneric::input::KeyData;
 use crate::device::{BUTTON_HEIGHT, BUTTON_WIDTH, STRIP_HEIGHT, STRIP_WIDTH};
 use crate::display::renderer::{draw_text, text_width};
 
-// Doom renders at 640x400, we scale to 560x224 (5x2 buttons at 112x112 each)
+// Doom renders at 640x400, we scale to 560x352 (buttons 560x224 + strip 560x128)
+// This gives ~1.59:1 aspect ratio, very close to Doom's native 1.6:1
 const SCALED_WIDTH: usize = 560;
-const SCALED_HEIGHT: usize = 224;
+const SCALED_HEIGHT: usize = 352; // 224 (buttons) + 128 (strip)
 
 // Auto-release timeout for sustained movement keys (ms)
 const KEY_RELEASE_TIMEOUT_MS: u128 = 150;
@@ -78,7 +79,13 @@ impl DoomGame {
                     return;
                 }
 
-                let deck_doom = DeckDoom { frame_tx, key_rx };
+                let deck_doom = DeckDoom {
+                    frame_tx,
+                    key_rx,
+                    scaled_buf: vec![0u8; SCALED_WIDTH * SCALED_HEIGHT * 3],
+                    x_map: Vec::new(),
+                    y_map: Vec::new(),
+                };
                 doomgeneric::game::init(deck_doom);
                 loop {
                     doomgeneric::game::tick();
@@ -93,6 +100,19 @@ impl DoomGame {
 
         // Clone a sender to talk to the persistent doom thread
         let key_tx = thread_state.key_tx.lock().unwrap().clone();
+
+        // If doom is already running (re-entering), send Escape to open menu
+        // so the user can start a new game via button presses (Enter)
+        if DOOM_THREAD.get().is_some() {
+            let _ = key_tx.send(KeyData {
+                pressed: true,
+                key: keys::KEY_ESCAPE,
+            });
+            let _ = key_tx.send(KeyData {
+                pressed: false,
+                key: keys::KEY_ESCAPE,
+            });
+        }
 
         Self {
             key_tx,
@@ -126,6 +146,7 @@ impl DoomGame {
                         }
                         if got_frame {
                             self.dirty_buttons = [true; 10];
+                            self.strip_dirty = true;
                         }
                     }
                 }
@@ -222,35 +243,25 @@ impl DoomGame {
                 draw_text(&mut img, font, msg2, mx2, 90, 14.0, Rgb([100, 100, 120]));
             }
             DoomState::Playing => {
-                // DOOM title on left
-                draw_text(&mut img, font, "DOOM", 20, 10, 36.0, Rgb([200, 50, 50]));
+                // Stretch bottom 128 rows of doom frame (560px) to fill full strip (800px)
+                let y_start = 224usize; // rows 224..352 go to strip
 
-                // Controls legend
-                let controls = [
-                    ("E0", "Move"),
-                    ("E1", "Strafe"),
-                    ("E2", "Turn"),
-                    ("Click", "Fire"),
-                    ("BTN", "Use"),
-                ];
-
-                let mut x = 200i32;
-                for (input, action) in &controls {
-                    draw_text(&mut img, font, input, x, 15, 14.0, Rgb([150, 150, 170]));
-                    draw_text(&mut img, font, action, x, 35, 12.0, Rgb([100, 100, 120]));
-                    x += 110;
+                for py in 0..STRIP_HEIGHT {
+                    for px in 0..STRIP_WIDTH {
+                        // Nearest-neighbor horizontal scale: 800 → 560
+                        let src_x = px as usize * SCALED_WIDTH / STRIP_WIDTH as usize;
+                        let src_y = y_start + py as usize;
+                        if src_y < SCALED_HEIGHT && src_x < SCALED_WIDTH {
+                            let idx = (src_y * SCALED_WIDTH + src_x) * 3;
+                            if idx + 2 < self.current_frame.len() {
+                                let r = self.current_frame[idx];
+                                let g = self.current_frame[idx + 1];
+                                let b = self.current_frame[idx + 2];
+                                img.put_pixel(px, py, Rgb([r, g, b]));
+                            }
+                        }
+                    }
                 }
-
-                // Key for encoders on bottom
-                draw_text(
-                    &mut img,
-                    font,
-                    "E0:fwd/back  E1:strafe  E2:turn  Click:fire  BTN:use  E3:exit",
-                    20,
-                    75,
-                    12.0,
-                    Rgb([60, 65, 80]),
-                );
             }
         }
 
@@ -354,36 +365,53 @@ impl DoomGame {
 struct DeckDoom {
     frame_tx: mpsc::SyncSender<Vec<u8>>,
     key_rx: mpsc::Receiver<KeyData>,
+    // Pre-allocated frame buffer (reused when channel is full)
+    scaled_buf: Vec<u8>,
+    // Pre-computed nearest-neighbor lookup tables (avoid per-pixel division)
+    x_map: Vec<usize>,
+    y_map: Vec<usize>, // stores row_offset = (src_y * xres) for direct indexing
 }
 
 impl doomgeneric::game::DoomGeneric for DeckDoom {
     fn draw_frame(&mut self, screen_buffer: &[u32], xres: usize, yres: usize) {
-        // Scale from xres x yres ARGB to SCALED_WIDTH x SCALED_HEIGHT RGB
-        let mut scaled = vec![0u8; SCALED_WIDTH * SCALED_HEIGHT * 3];
+        // Build lookup tables on first call (resolution is fixed)
+        if self.x_map.is_empty() {
+            self.x_map = (0..SCALED_WIDTH)
+                .map(|sx| sx * xres / SCALED_WIDTH)
+                .collect();
+            self.y_map = (0..SCALED_HEIGHT)
+                .map(|sy| (sy * yres / SCALED_HEIGHT) * xres)
+                .collect();
+        }
 
+        // Scale ARGB → RGB using pre-computed tables
         for sy in 0..SCALED_HEIGHT {
+            let src_row = self.y_map[sy];
+            let dst_row = sy * SCALED_WIDTH * 3;
             for sx in 0..SCALED_WIDTH {
-                // Nearest-neighbor sampling
-                let src_x = sx * xres / SCALED_WIDTH;
-                let src_y = sy * yres / SCALED_HEIGHT;
-                let src_idx = src_y * xres + src_x;
-
-                if src_idx < screen_buffer.len() {
-                    let argb = screen_buffer[src_idx];
-                    let r = ((argb >> 16) & 0xFF) as u8;
-                    let g = ((argb >> 8) & 0xFF) as u8;
-                    let b = (argb & 0xFF) as u8;
-
-                    let dst_idx = (sy * SCALED_WIDTH + sx) * 3;
-                    scaled[dst_idx] = r;
-                    scaled[dst_idx + 1] = g;
-                    scaled[dst_idx + 2] = b;
-                }
+                let argb = screen_buffer[src_row + self.x_map[sx]];
+                let dst = dst_row + sx * 3;
+                self.scaled_buf[dst] = ((argb >> 16) & 0xFF) as u8;
+                self.scaled_buf[dst + 1] = ((argb >> 8) & 0xFF) as u8;
+                self.scaled_buf[dst + 2] = (argb & 0xFF) as u8;
             }
         }
 
-        // Send to main loop (capacity 1: drops old frame if not yet consumed)
-        let _ = self.frame_tx.try_send(scaled);
+        // Send frame, reusing buffer if channel is full (avoids allocation)
+        let buf = std::mem::replace(
+            &mut self.scaled_buf,
+            Vec::new(), // temporary empty placeholder
+        );
+        match self.frame_tx.try_send(buf) {
+            Ok(()) => {
+                // Frame consumed — allocate fresh buffer for next frame
+                self.scaled_buf = vec![0u8; SCALED_WIDTH * SCALED_HEIGHT * 3];
+            }
+            Err(mpsc::TrySendError::Full(returned)) | Err(mpsc::TrySendError::Disconnected(returned)) => {
+                // Channel full or dead — reuse the buffer (zero allocation)
+                self.scaled_buf = returned;
+            }
+        }
     }
 
     fn get_key(&mut self) -> Option<KeyData> {
