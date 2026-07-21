@@ -8,6 +8,7 @@ license = "MIT"
 [dependencies]
 # Device communication
 mirajazz = "0.4"
+async-hid = "0.4"
 tokio = { version = "1", features = ["full"] }
 
 # Keystroke injection
@@ -39,7 +40,7 @@ libc = "0.2"
 
 # Web UI
 axum = "0.8"
-tower-http = { version = "0.6", features = ["cors"] }
+tower-http = { version = "0.6", features = ["cors", "compression-gzip", "compression-br"] }
 rust-embed = "8"
 mime_guess = "2"
 

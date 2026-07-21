@@ -132,50 +132,6 @@ fn darken(color: Rgb<u8>, factor: f32) -> Rgb<u8> {
     ])
 }
 
-/// Render a button with custom background color (for special states like recording)
-pub fn render_button_with_color(
-    font: &Font,
-    label: &str,
-    active: bool,
-    _button_id: u8,
-    override_color: Rgb<u8>,
-) -> Result<RgbImage> {
-    let mut img = RgbImage::new(BUTTON_WIDTH, BUTTON_HEIGHT);
-
-    // Fill with gradient using override color
-    let bright = brighten(override_color, 1.3);
-    fill_gradient(&mut img, bright, override_color);
-
-    // Draw styled border
-    draw_styled_border(&mut img, bright, active);
-
-    // Calculate text positioning
-    let label_scale = if label.len() <= 4 {
-        20.0
-    } else if label.len() <= 6 {
-        16.0
-    } else {
-        13.0
-    };
-    let label_width = text_width(font, label, label_scale);
-    let label_x = ((BUTTON_WIDTH as i32 - label_width) / 2).max(2);
-    let label_y = (BUTTON_HEIGHT as i32 / 2) - (label_scale as i32 / 2);
-
-    // Draw text with shadow
-    draw_text(
-        &mut img,
-        font,
-        label,
-        label_x + 1,
-        label_y + 1,
-        label_scale,
-        Rgb([0, 0, 0]),
-    );
-    draw_text(&mut img, font, label, label_x, label_y, label_scale, WHITE);
-
-    Ok(img)
-}
-
 /// Draw a styled border with 3D effect
 fn draw_styled_border(img: &mut RgbImage, color: Rgb<u8>, active: bool) {
     let w = img.width();
@@ -230,43 +186,6 @@ fn brighten(color: Rgb<u8>, factor: f32) -> Rgb<u8> {
         (color[1] as f32 * factor).min(255.0) as u8,
         (color[2] as f32 * factor).min(255.0) as u8,
     ])
-}
-
-/// Load a GIF from URL and return the first frame as RgbaImage
-/// Uses a simple cache to avoid repeated fetches
-fn load_gif_image(url: &str) -> Option<image::RgbaImage> {
-    use std::collections::HashMap;
-    use std::sync::Mutex;
-    use std::io::Read;
-
-    // Simple in-memory cache for fetched GIFs
-    static GIF_CACHE: std::sync::OnceLock<Mutex<HashMap<String, Option<image::RgbaImage>>>> =
-        std::sync::OnceLock::new();
-
-    let cache = GIF_CACHE.get_or_init(|| Mutex::new(HashMap::new()));
-    let mut cache_guard = cache.lock().ok()?;
-
-    // Check cache first
-    if let Some(cached) = cache_guard.get(url) {
-        return cached.clone();
-    }
-
-    // Fetch the GIF
-    let result = (|| -> Option<image::RgbaImage> {
-        let response = ureq::get(url).call().ok()?;
-
-        // Read response body
-        let mut bytes = Vec::new();
-        response.into_reader().take(5_000_000).read_to_end(&mut bytes).ok()?; // 5MB limit
-
-        // Load as image (handles GIF first frame automatically)
-        let img = image::load_from_memory(&bytes).ok()?;
-        Some(img.to_rgba8())
-    })();
-
-    // Cache the result (even if None, to avoid repeated failed fetches)
-    cache_guard.insert(url.to_string(), result.clone());
-    result
 }
 
 /// Render an RGBA image centered on the button
@@ -325,15 +244,6 @@ fn render_presized_image_on_button(img: &mut RgbImage, source: &image::RgbaImage
     }
 }
 
-/// Render a button with profile-specific configuration
-pub fn render_button_with_config(
-    font: &Font,
-    config: &ButtonConfig,
-    active: bool,
-) -> Result<RgbImage> {
-    render_button_with_config_and_id(font, config, active, None)
-}
-
 /// Render a button with a pre-provided GIF frame (fast path for animation)
 /// Uses cached background for maximum performance
 pub fn render_button_with_gif_frame(
@@ -375,8 +285,8 @@ pub fn render_button_with_config_and_id(
     draw_styled_border(&mut img, border_color, active);
 
     // Priority: gif_url > custom_image > emoji_image > text label
-    let image_rendered = if let Some(gif_url) = config.gif_url {
-        // GIF from URL - use animated frame if available
+    // GIF/emoji network loads are non-blocking — show label until ready, then redraw.
+    let image_rendered = if let Some(gif_url) = config.gif_url.as_deref() {
         let mut frame_found = false;
 
         if let Some(btn_id) = button_id {
@@ -388,7 +298,7 @@ pub fn render_button_with_config_and_id(
                     anim.set_button_gif(btn_id, gif_url);
                 }
 
-                // Get current animation frame
+                // Use animated frame if already loaded (background fetch)
                 if let Some(frame_img) = anim.get_current_frame(btn_id) {
                     render_image_on_button(&mut img, frame_img);
                     frame_found = true;
@@ -396,16 +306,8 @@ pub fn render_button_with_config_and_id(
             }
         }
 
-        // Fallback to static first frame
-        if !frame_found {
-            if let Some(gif_img) = load_gif_image(gif_url) {
-                render_image_on_button(&mut img, &gif_img);
-                frame_found = true;
-            }
-        }
-
         frame_found
-    } else if let Some(custom_image) = config.custom_image {
+    } else if let Some(custom_image) = config.custom_image.as_deref() {
         // Custom image from base64 data URL
         if let Some(rgba_img) = super::emoji::load_base64_image(custom_image) {
             render_image_on_button(&mut img, &rgba_img);
@@ -413,10 +315,10 @@ pub fn render_button_with_config_and_id(
         } else {
             false
         }
-    } else if let Some(emoji_ref) = config.emoji_image {
-        // Emoji from Twemoji
+    } else if let Some(emoji_ref) = config.emoji_image.as_deref() {
+        // Emoji from Twemoji (non-blocking; None while fetch is in flight)
         if let Some(emoji_img) = super::emoji::get_emoji_image(emoji_ref) {
-            render_image_on_button(&mut img, &emoji_img);
+            render_image_on_button(&mut img, emoji_img.as_ref());
             true
         } else {
             false
@@ -427,7 +329,7 @@ pub fn render_button_with_config_and_id(
 
     if !image_rendered {
         // Render text label if no emoji image
-        let label = config.label;
+        let label = config.label.as_str();
         let label_scale = if label.len() <= 4 {
             20.0
         } else if label.len() <= 6 {

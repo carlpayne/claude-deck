@@ -10,8 +10,8 @@
     <div class="container">
         <header>
             <h1>claude-deck</h1>
-            <div class="connection-status" id="connection-status">
-                <span class="status-dot"></span>
+            <div class="connection-status" id="connection-status" role="status" aria-live="polite">
+                <span class="status-dot" aria-hidden="true"></span>
                 <span class="status-text">Connecting...</span>
             </div>
         </header>
@@ -103,23 +103,23 @@
                             <label for="edit-emoji-image">Emoji</label>
                             <div class="emoji-input-row">
                                 <input type="text" id="edit-emoji-image" placeholder="Paste emoji">
-                                <div class="emoji-picker" id="emoji-picker">
-                                    <span class="emoji-option" data-emoji="👍">👍</span>
-                                    <span class="emoji-option" data-emoji="👎">👎</span>
-                                    <span class="emoji-option" data-emoji="✅">✅</span>
-                                    <span class="emoji-option" data-emoji="❌">❌</span>
-                                    <span class="emoji-option" data-emoji="❤️">❤️</span>
-                                    <span class="emoji-option" data-emoji="🔥">🔥</span>
-                                    <span class="emoji-option" data-emoji="⭐">⭐</span>
-                                    <span class="emoji-option" data-emoji="👀">👀</span>
-                                    <span class="emoji-option" data-emoji="🎉">🎉</span>
-                                    <span class="emoji-option" data-emoji="💯">💯</span>
-                                    <span class="emoji-option" data-emoji="🙏">🙏</span>
-                                    <span class="emoji-option" data-emoji="😂">😂</span>
-                                    <span class="emoji-option" data-emoji="🚀">🚀</span>
-                                    <span class="emoji-option" data-emoji="💡">💡</span>
-                                    <span class="emoji-option" data-emoji="⚠️">⚠️</span>
-                                    <span class="emoji-option" data-emoji="🐛">🐛</span>
+                                <div class="emoji-picker" id="emoji-picker" role="listbox" aria-label="Emoji picker">
+                                    <button type="button" class="emoji-option" data-emoji="👍" role="option" aria-label="thumbs up">👍</button>
+                                    <button type="button" class="emoji-option" data-emoji="👎" role="option" aria-label="thumbs down">👎</button>
+                                    <button type="button" class="emoji-option" data-emoji="✅" role="option" aria-label="check">✅</button>
+                                    <button type="button" class="emoji-option" data-emoji="❌" role="option" aria-label="cross">❌</button>
+                                    <button type="button" class="emoji-option" data-emoji="❤️" role="option" aria-label="heart">❤️</button>
+                                    <button type="button" class="emoji-option" data-emoji="🔥" role="option" aria-label="fire">🔥</button>
+                                    <button type="button" class="emoji-option" data-emoji="⭐" role="option" aria-label="star">⭐</button>
+                                    <button type="button" class="emoji-option" data-emoji="👀" role="option" aria-label="eyes">👀</button>
+                                    <button type="button" class="emoji-option" data-emoji="🎉" role="option" aria-label="tada">🎉</button>
+                                    <button type="button" class="emoji-option" data-emoji="💯" role="option" aria-label="100">💯</button>
+                                    <button type="button" class="emoji-option" data-emoji="🙏" role="option" aria-label="pray">🙏</button>
+                                    <button type="button" class="emoji-option" data-emoji="😂" role="option" aria-label="joy">😂</button>
+                                    <button type="button" class="emoji-option" data-emoji="🚀" role="option" aria-label="rocket">🚀</button>
+                                    <button type="button" class="emoji-option" data-emoji="💡" role="option" aria-label="bulb">💡</button>
+                                    <button type="button" class="emoji-option" data-emoji="⚠️" role="option" aria-label="warning">⚠️</button>
+                                    <button type="button" class="emoji-option" data-emoji="🐛" role="option" aria-label="bug">🐛</button>
                                 </div>
                             </div>
                         </div>
@@ -237,10 +237,22 @@
         </footer>
     </div>
 
-    <!-- Create Profile Modal -->
-    <div class="modal-overlay hidden" id="create-profile-modal">
+    <!-- Copy Button Modal -->
+    <div class="modal-overlay hidden" id="copy-button-modal" role="dialog" aria-modal="true" aria-labelledby="copy-modal-title">
         <div class="modal-content">
-            <h2>Create New Profile</h2>
+            <h2 id="copy-modal-title">Copy button to…</h2>
+            <p class="editor-hint" id="copy-modal-hint">Select a destination position</p>
+            <div class="copy-position-grid" id="copy-position-grid" role="listbox" aria-label="Destination positions"></div>
+            <div class="form-actions">
+                <button type="button" class="btn-secondary" id="btn-cancel-copy">Cancel</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Create Profile Modal -->
+    <div class="modal-overlay hidden" id="create-profile-modal" role="dialog" aria-modal="true" aria-labelledby="create-modal-title">
+        <div class="modal-content">
+            <h2 id="create-modal-title">Create New Profile</h2>
             <form id="create-profile-form">
                 <div class="form-group">
                     <label for="new-profile-app">Application</label>
@@ -268,6 +280,8 @@
             </form>
         </div>
     </div>
+
+    <div class="toast-container" id="toast-container" aria-live="polite" aria-atomic="false"></div>
 
     <script src="app.js"></script>
 </body>

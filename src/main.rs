@@ -212,6 +212,28 @@ fn install_autostart() -> Result<()> {
     }
 }
 
+const HOOK_EVENTS: &[&str] = &[
+    "UserPromptSubmit",
+    "PreToolUse",
+    "PostToolUse",
+    "Notification",
+    "Stop",
+];
+
+fn is_claude_deck_hook_entry(v: &serde_json::Value) -> bool {
+    v.get("hooks")
+        .and_then(|h| h.as_array())
+        .map(|hooks_arr| {
+            hooks_arr.iter().any(|hook| {
+                hook.get("command")
+                    .and_then(|c| c.as_str())
+                    .map(|s| s.contains("claude-deck"))
+                    .unwrap_or(false)
+            })
+        })
+        .unwrap_or(false)
+}
+
 fn install_hooks() -> Result<()> {
     use std::fs;
     use std::os::unix::fs::PermissionsExt;
@@ -282,23 +304,11 @@ fn install_hooks() -> Result<()> {
         let hooks = obj.entry("hooks").or_insert(serde_json::json!({}));
         if let Some(hooks_obj) = hooks.as_object_mut() {
             // Add our hook to each event type
-            for event in &["UserPromptSubmit", "PreToolUse", "PostToolUse", "Notification", "Stop"] {
+            for event in HOOK_EVENTS {
                 let event_hooks = hooks_obj.entry(*event).or_insert(serde_json::json!([]));
                 if let Some(arr) = event_hooks.as_array_mut() {
                     // Check if our hook is already there
-                    let hook_exists = arr.iter().any(|v| {
-                        v.get("hooks")
-                            .and_then(|h| h.as_array())
-                            .map(|hooks_arr| {
-                                hooks_arr.iter().any(|hook| {
-                                    hook.get("command")
-                                        .and_then(|c| c.as_str())
-                                        .map(|s| s.contains("claude-deck"))
-                                        .unwrap_or(false)
-                                })
-                            })
-                            .unwrap_or(false)
-                    });
+                    let hook_exists = arr.iter().any(is_claude_deck_hook_entry);
                     if !hook_exists {
                         arr.push(hook_entry.clone());
                     }
@@ -410,22 +420,10 @@ fn uninstall_hooks() -> Result<()> {
             let mut modified = false;
 
             if let Some(hooks) = settings.get_mut("hooks").and_then(|h| h.as_object_mut()) {
-                for event in &["UserPromptSubmit", "PreToolUse", "PostToolUse", "Notification", "Stop"] {
+                for event in HOOK_EVENTS {
                     if let Some(event_hooks) = hooks.get_mut(*event).and_then(|e| e.as_array_mut()) {
                         let original_len = event_hooks.len();
-                        event_hooks.retain(|v| {
-                            !v.get("hooks")
-                                .and_then(|h| h.as_array())
-                                .map(|hooks_arr| {
-                                    hooks_arr.iter().any(|hook| {
-                                        hook.get("command")
-                                            .and_then(|c| c.as_str())
-                                            .map(|s| s.contains("claude-deck"))
-                                            .unwrap_or(false)
-                                    })
-                                })
-                                .unwrap_or(false)
-                        });
+                        event_hooks.retain(|v| !is_claude_deck_hook_entry(v));
                         if event_hooks.len() != original_len {
                             modified = true;
                         }

@@ -47,11 +47,7 @@ impl ActionConfig {
                 value: value.clone(),
                 auto_submit: *auto_submit,
             },
-            ActionConfig::Custom { value } => {
-                // Custom actions use static strings, so we leak the string
-                // This is acceptable since profiles are loaded once at startup
-                ButtonAction::Custom(Box::leak(value.clone().into_boxed_str()))
-            }
+            ActionConfig::Custom { value } => ButtonAction::Custom(value.clone()),
         }
     }
 
@@ -70,7 +66,7 @@ impl ActionConfig {
                 auto_submit: *auto_submit,
             },
             ButtonAction::Custom(value) => ActionConfig::Custom {
-                value: value.to_string(),
+                value: value.clone(),
             },
         }
     }
@@ -107,35 +103,31 @@ impl ButtonConfigEntry {
         let bright_color = parse_hex_color(&self.bright_color).unwrap_or(Rgb([110, 115, 125]));
 
         ButtonConfig {
-            label: Box::leak(self.label.clone().into_boxed_str()),
+            label: self.label.clone(),
             colors: (color, bright_color),
             action: self.action.to_button_action(),
-            emoji_image: self
-                .emoji_image
-                .as_ref()
-                .map(|s| Box::leak(s.clone().into_boxed_str()) as &'static str),
-            custom_image: self
-                .custom_image
-                .as_ref()
-                .map(|s| Box::leak(s.clone().into_boxed_str()) as &'static str),
-            gif_url: self
-                .gif_url
-                .as_ref()
-                .map(|s| Box::leak(s.clone().into_boxed_str()) as &'static str),
+            emoji_image: self.emoji_image.clone(),
+            custom_image: self.custom_image.clone(),
+            gif_url: self.gif_url.clone(),
         }
+    }
+
+    /// Whether this button is configured as a MIC custom action
+    pub fn is_mic_action(&self) -> bool {
+        matches!(&self.action, ActionConfig::Custom { value } if value.eq_ignore_ascii_case("MIC"))
     }
 
     /// Create from runtime ButtonConfig with position
     pub fn from_button_config(position: u8, config: &ButtonConfig) -> Self {
         Self {
             position,
-            label: config.label.to_string(),
+            label: config.label.clone(),
             color: rgb_to_hex(config.colors.0),
             bright_color: rgb_to_hex(config.colors.1),
             action: ActionConfig::from_button_action(&config.action),
-            emoji_image: config.emoji_image.map(|s| s.to_string()),
-            custom_image: config.custom_image.map(|s| s.to_string()),
-            gif_url: config.gif_url.map(|s| s.to_string()),
+            emoji_image: config.emoji_image.clone(),
+            custom_image: config.custom_image.clone(),
+            gif_url: config.gif_url.clone(),
         }
     }
 }

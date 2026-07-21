@@ -1,13 +1,31 @@
 use anyhow::{anyhow, Result};
+use async_hid::HidError;
 use image::{DynamicImage, RgbImage};
 use mirajazz::{
     device::{list_devices, Device},
+    error::MirajazzError,
     types::{DeviceInput, ImageFormat, ImageMirroring, ImageMode, ImageRotation},
 };
 use std::time::Duration;
+use thiserror::Error;
 use tracing::{debug, info, warn};
 
 use super::protocol::*;
+
+/// Default HID poll timeout — aligns with GIF/game tick cadence (~120Hz)
+pub const POLL_TIMEOUT: Duration = Duration::from_millis(8);
+
+/// Brief timeout for draining queued HID reports.
+/// Must not be zero: mirajazz races the read against the timer, and a 0ms
+/// timeout can cancel the read and drop encoder clicks.
+pub const POLL_DRAIN_TIMEOUT: Duration = Duration::from_millis(1);
+
+/// Device-layer errors that callers may want to match on
+#[derive(Debug, Error)]
+pub enum DeviceError {
+    #[error("Device disconnected")]
+    Disconnected,
+}
 
 /// Input events from the device
 #[derive(Debug, Clone)]
@@ -17,6 +35,18 @@ pub enum InputEvent {
     EncoderRotate { encoder: u8, direction: i8 },
     EncoderPress(u8),
     EncoderRelease(u8),
+}
+
+fn is_disconnect_error(err: &MirajazzError) -> bool {
+    matches!(err, MirajazzError::HidError(HidError::Disconnected))
+}
+
+/// Some firmwares report multiple detents in the state byte; treat 0/1 as a single step.
+fn encoder_steps(state: u8) -> i8 {
+    match state {
+        0 | 1 => 1,
+        n => (n as i8).clamp(1, 8),
+    }
 }
 
 /// Device information
@@ -295,7 +325,8 @@ impl DeviceManager {
             // Pattern: 0x70 = CCW, 0x71 = CW
             0x70 | 0x71 => {
                 let mut directions = vec![0i8; ENCODER_COUNT as usize];
-                let dir = if event_type & 1 == 1 { 1 } else { -1 };
+                let steps = encoder_steps(state);
+                let dir = if event_type & 1 == 1 { steps } else { -steps };
                 directions[3] = dir;
                 Ok(DeviceInput::EncoderTwist(directions))
             }
@@ -304,7 +335,8 @@ impl DeviceManager {
             // Pattern: 0xa0 = CCW, 0xa1 = CW
             0xa0 | 0xa1 => {
                 let mut directions = vec![0i8; ENCODER_COUNT as usize];
-                let dir = if event_type & 1 == 1 { 1 } else { -1 };
+                let steps = encoder_steps(state);
+                let dir = if event_type & 1 == 1 { steps } else { -steps };
                 directions[0] = dir;
                 Ok(DeviceInput::EncoderTwist(directions))
             }
@@ -312,7 +344,8 @@ impl DeviceManager {
             // Knob 3 rotation (0x90 CCW, 0x91 CW)
             0x90 | 0x91 => {
                 let mut directions = vec![0i8; ENCODER_COUNT as usize];
-                directions[2] = if event_type == 0x91 { 1 } else { -1 };
+                let steps = encoder_steps(state);
+                directions[2] = if event_type == 0x91 { steps } else { -steps };
                 Ok(DeviceInput::EncoderTwist(directions))
             }
 
@@ -330,12 +363,12 @@ impl DeviceManager {
             // Knob 2 rotation (0x50 CCW, 0x51 CW)
             0x50 => {
                 let mut directions = vec![0i8; ENCODER_COUNT as usize];
-                directions[1] = -1; // Encoder 1
+                directions[1] = -encoder_steps(state); // Encoder 1
                 Ok(DeviceInput::EncoderTwist(directions))
             }
             0x51 => {
                 let mut directions = vec![0i8; ENCODER_COUNT as usize];
-                directions[1] = 1; // Encoder 1
+                directions[1] = encoder_steps(state); // Encoder 1
                 Ok(DeviceInput::EncoderTwist(directions))
             }
 
@@ -353,10 +386,25 @@ impl DeviceManager {
         }
     }
 
-    /// Poll for input events (non-blocking, 1ms timeout for responsive animations)
+    /// Poll for input events (waits up to [`POLL_TIMEOUT`])
     pub async fn poll_event(&mut self) -> Result<Option<InputEvent>> {
-        let timeout = Duration::from_millis(1);
+        self.poll_event_with_timeout(POLL_TIMEOUT).await
+    }
 
+    /// Faster poll used while a game is active (lower input latency)
+    pub async fn poll_event_game(&mut self) -> Result<Option<InputEvent>> {
+        self.poll_event_with_timeout(Duration::from_millis(2)).await
+    }
+
+    /// Poll briefly — used to drain queued events during games without stalling
+    pub async fn poll_event_nowait(&mut self) -> Result<Option<InputEvent>> {
+        self.poll_event_with_timeout(POLL_DRAIN_TIMEOUT).await
+    }
+
+    pub async fn poll_event_with_timeout(
+        &mut self,
+        timeout: Duration,
+    ) -> Result<Option<InputEvent>> {
         match self
             .device
             .read_input(Some(timeout), Self::process_input)
@@ -426,11 +474,9 @@ impl DeviceManager {
                 }
             }
             Err(e) => {
-                // Check if this is a disconnect error
-                let error_str = format!("{}", e);
-                if error_str.contains("Disconnected") {
+                if is_disconnect_error(&e) {
                     warn!("Device disconnected");
-                    return Err(anyhow!("Device disconnected"));
+                    return Err(DeviceError::Disconnected.into());
                 }
                 warn!("Error reading device input: {}", e);
                 Ok(None)

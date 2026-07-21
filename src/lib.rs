@@ -11,11 +11,12 @@ pub mod web;
 
 use anyhow::Result;
 use std::sync::{Arc, RwLock as StdRwLock};
+use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, RwLock as TokioRwLock};
 use tracing::{debug, error, info, warn};
 
 use config::Config;
-use device::{button_to_display_key, DeviceManager};
+use device::{button_to_display_key, DeviceError, DeviceManager};
 use display::DisplayRenderer;
 use input::InputHandler;
 use profiles::ProfileManager;
@@ -26,6 +27,39 @@ use state::AppState;
 pub enum AppCommand {
     /// Redraw all buttons (e.g., after config change)
     RedrawButtons,
+}
+
+/// Interval helper for periodic main-loop work
+struct Ticker {
+    last: Instant,
+    interval: Duration,
+}
+
+impl Ticker {
+    fn new(interval: Duration) -> Self {
+        Self {
+            last: Instant::now(),
+            interval,
+        }
+    }
+
+    fn due(&self) -> bool {
+        self.last.elapsed() >= self.interval
+    }
+
+    fn mark(&mut self) {
+        self.last = Instant::now();
+    }
+
+    /// If due, mark and return true
+    fn fire(&mut self) -> bool {
+        if self.due() {
+            self.mark();
+            true
+        } else {
+            false
+        }
+    }
 }
 
 /// Main application struct
@@ -233,35 +267,22 @@ impl App {
     async fn run_main_loop(&mut self) -> Result<()> {
         info!("Running - keystrokes will be sent to focused window");
 
-        let mut last_keepalive = std::time::Instant::now();
-        let keepalive_interval = std::time::Duration::from_secs(10);
+        let mut keepalive = Ticker::new(Duration::from_secs(10));
+        let mut status_check = Ticker::new(Duration::from_millis(200));
+        let mut app_check = Ticker::new(Duration::from_millis(500));
+        let mut lock_check = Ticker::new(Duration::from_secs(2));
+        let mut volume_check = Ticker::new(Duration::from_secs(2));
+        let mut gif_tick = Ticker::new(Duration::from_millis(16));
+        let mut waiting_flash = Ticker::new(Duration::from_millis(500));
+        let mut game_tick = Ticker::new(Duration::from_millis(16));
+        let mut reconnect = Ticker::new(Duration::from_secs(5));
 
-        let mut last_status_check = std::time::Instant::now();
-        let status_check_interval = std::time::Duration::from_millis(200);
-
-        let mut last_app_check = std::time::Instant::now();
-        let app_check_interval = std::time::Duration::from_millis(500);
         let mut pending_app_check: Option<tokio::task::JoinHandle<Option<String>>> = None;
-
-        let mut last_lock_check = std::time::Instant::now();
-        let lock_check_interval = std::time::Duration::from_secs(2); // Check every 2 seconds (security, not latency-critical)
-
-        let mut last_volume_check = std::time::Instant::now();
-        let volume_check_interval = std::time::Duration::from_secs(2); // Sync external volume changes
         let mut pending_volume_check: Option<tokio::task::JoinHandle<Option<u8>>> = None;
 
-        let mut last_gif_tick = std::time::Instant::now();
-        let gif_tick_interval = std::time::Duration::from_millis(16); // 60 FPS tick rate
-
-        let mut last_waiting_flash = std::time::Instant::now();
-        let waiting_flash_interval = std::time::Duration::from_millis(500); // Pulse every 500ms
-
-        let mut last_game_tick = std::time::Instant::now();
-        let game_tick_interval = std::time::Duration::from_millis(16); // ~60 FPS game tick
-
         // Track last device write to enforce cooldown (HID device needs time between operations)
-        let mut last_device_write = std::time::Instant::now();
-        let device_cooldown = std::time::Duration::from_millis(10); // Min gap between device operations
+        let mut last_device_write = Instant::now();
+        let device_cooldown = Duration::from_millis(10);
 
         // Track volume/brightness overlay state to refresh display when they expire
         let mut volume_overlay_was_active = false;
@@ -275,11 +296,11 @@ impl App {
                         if !self.state.read().await.game_active {
                             info!("Received redraw command from web UI");
                             // Small delay to let any pending device operations complete
-                            tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
+                            tokio::time::sleep(Duration::from_millis(50)).await;
                             if let Err(e) = self.redraw_all_buttons().await {
                                 warn!("Failed to redraw buttons from web UI: {}", e);
                             }
-                            last_device_write = std::time::Instant::now();
+                            last_device_write = Instant::now();
                         }
                     }
                 }
@@ -287,23 +308,29 @@ impl App {
             // Handle device events
             let event = if let Some(ref mut device) = self.device {
                 // Send periodic keep-alive to prevent device timeout
-                if last_keepalive.elapsed() >= keepalive_interval {
+                if keepalive.fire() {
                     if let Err(e) = device.keep_alive().await {
                         warn!("Keep-alive failed: {}", e);
                     }
-                    last_keepalive = std::time::Instant::now();
                 }
 
-                match device.poll_event().await {
+                let poll = if self.game.is_some() {
+                    device.poll_event_game().await
+                } else {
+                    device.poll_event().await
+                };
+                match poll {
                     Ok(event) => event,
                     Err(e) => {
-                        // Check if device disconnected
-                        let error_str = format!("{}", e);
-                        if error_str.contains("disconnected") || error_str.contains("Disconnected")
+                        if e.downcast_ref::<DeviceError>()
+                            .is_some_and(|err| matches!(err, DeviceError::Disconnected))
                         {
                             warn!("Device disconnected, will try to reconnect...");
                             self.device = None;
                             self.state.write().await.connected = false;
+                            reconnect.mark();
+                        } else {
+                            warn!("Device poll error: {}", e);
                         }
                         None
                     }
@@ -322,19 +349,33 @@ impl App {
                         // Collect all queued events first (avoids borrow conflict)
                         let mut events = vec![event];
                         if let Some(ref mut device) = self.device {
-                            while let Ok(Some(extra)) = device.poll_event().await {
+                            while let Ok(Some(extra)) = device.poll_event_nowait().await {
                                 events.push(extra);
                             }
                         }
                         for ev in &events {
                             self.handle_game_input(ev).await;
                         }
-                        last_device_write = std::time::Instant::now();
+                        // Apply due movement now (turns nudge the next move forward)
+                        if let Some(ref mut game) = self.game {
+                            game.tick();
+                        }
+                        // Flush turn/HUD feedback immediately — do NOT bump last_device_write
+                        // unless we actually wrote (that was delaying strip updates by a full cooldown)
+                        if self.game.as_ref().is_some_and(|g| g.has_any_dirty())
+                            && last_device_write.elapsed() >= device_cooldown
+                        {
+                            if let Err(e) = self.update_game_display().await {
+                                debug!("Failed to update game display after input: {}", e);
+                            } else {
+                                last_device_write = Instant::now();
+                            }
+                        }
                     } else {
                         // Check if encoder 3 press should start a game
                         if matches!(event, device::InputEvent::EncoderPress(3)) {
                             self.cycle_game().await;
-                            last_device_write = std::time::Instant::now();
+                            last_device_write = Instant::now();
                         } else {
                             if let Err(e) = self.input.handle_event(event).await {
                                 warn!("Failed to handle input event: {}", e);
@@ -342,7 +383,7 @@ impl App {
                             if let Err(e) = self.update_display().await {
                                 debug!("Failed to update display: {}", e);
                             }
-                            last_device_write = std::time::Instant::now();
+                            last_device_write = Instant::now();
                         }
                     }
                 } else {
@@ -396,11 +437,10 @@ impl App {
                     if let Err(e) = self.redraw_all_buttons().await {
                         warn!("Failed to redraw buttons after intro: {}", e);
                     }
-                    last_device_write = std::time::Instant::now();
+                    last_device_write = Instant::now();
                 }
-            } else if self.device.is_none() {
-                // Try to reconnect periodically
-                tokio::time::sleep(tokio::time::Duration::from_secs(5)).await;
+            } else if self.device.is_none() && reconnect.fire() {
+                // Non-blocking reconnect attempts (don't stall the loop for 5s)
                 if let Ok(d) = DeviceManager::connect().await {
                     info!("Reconnected to device");
                     self.device = Some(d);
@@ -408,7 +448,7 @@ impl App {
                     if let Err(e) = self.render_initial_display().await {
                         warn!("Failed to render initial display on reconnect: {}", e);
                     }
-                    last_device_write = std::time::Instant::now();
+                    last_device_write = Instant::now();
                 }
             }
 
@@ -418,21 +458,20 @@ impl App {
                     if let Err(e) = self.update_display().await {
                         debug!("Failed to update display after long-press: {}", e);
                     }
-                    last_device_write = std::time::Instant::now();
+                    last_device_write = Instant::now();
                 }
                 Err(e) => warn!("Failed to check long-press: {}", e),
                 _ => {}
             }
 
             // Poll Claude Code status file periodically (skip display update during game)
-            if last_status_check.elapsed() >= status_check_interval {
-                last_status_check = std::time::Instant::now();
+            if status_check.fire() {
                 match self.update_from_claude_status().await {
                     Ok(true) if !self.state.read().await.game_active => {
                         if let Err(e) = self.update_display().await {
                             debug!("Failed to update display after status change: {}", e);
                         }
-                        last_device_write = std::time::Instant::now();
+                        last_device_write = Instant::now();
                     }
                     Err(e) => debug!("Failed to update from Claude status: {}", e),
                     _ => {}
@@ -456,7 +495,7 @@ impl App {
                                     warn!("Failed to redraw buttons on app change: {}", e);
                                 }
                             }
-                            last_device_write = std::time::Instant::now();
+                            last_device_write = Instant::now();
                         }
                     }
                 } else {
@@ -466,16 +505,14 @@ impl App {
             }
 
             // Spawn new background check if interval elapsed and no pending check
-            if pending_app_check.is_none() && last_app_check.elapsed() >= app_check_interval {
-                last_app_check = std::time::Instant::now();
+            if pending_app_check.is_none() && app_check.fire() {
                 pending_app_check = Some(tokio::spawn(async {
                     system::get_focused_app().await
                 }));
             }
 
             // Check if screen is locked (for security - disable input when locked)
-            if last_lock_check.elapsed() >= lock_check_interval {
-                last_lock_check = std::time::Instant::now();
+            if lock_check.fire() {
                 let is_locked = system::is_screen_locked().await;
                 let was_locked = self.state.read().await.screen_locked;
                 if is_locked != was_locked {
@@ -497,7 +534,7 @@ impl App {
                         // If locked during game, exit game
                         self.exit_game().await;
                     }
-                    last_device_write = std::time::Instant::now();
+                    last_device_write = Instant::now();
                 }
             }
 
@@ -517,8 +554,7 @@ impl App {
                 }
             }
 
-            if pending_volume_check.is_none() && last_volume_check.elapsed() >= volume_check_interval {
-                last_volume_check = std::time::Instant::now();
+            if pending_volume_check.is_none() && volume_check.fire() {
                 pending_volume_check = Some(tokio::spawn(async {
                     system::get_system_volume().await
                 }));
@@ -528,8 +564,7 @@ impl App {
             let game_is_active = self.game.is_some();
 
             // Game tick (~16ms) - update game state
-            if game_is_active && last_game_tick.elapsed() >= game_tick_interval {
-                last_game_tick = std::time::Instant::now();
+            if game_is_active && game_tick.fire() {
                 self.game.as_mut().unwrap().tick();
             }
 
@@ -541,12 +576,11 @@ impl App {
                 if let Err(e) = self.update_game_display().await {
                     debug!("Failed to update game display: {}", e);
                 }
-                last_device_write = std::time::Instant::now();
+                last_device_write = Instant::now();
             }
 
             // Flash the LCD strip when waiting for user input (skip during game)
-            if !game_is_active && last_waiting_flash.elapsed() >= waiting_flash_interval {
-                last_waiting_flash = std::time::Instant::now();
+            if !game_is_active && waiting_flash.fire() {
                 let mut state = self.state.write().await;
                 if state.waiting_for_input {
                     state.waiting_flash_on = !state.waiting_flash_on;
@@ -554,7 +588,7 @@ impl App {
                     if let Err(e) = self.update_display().await {
                         debug!("Failed to update display for waiting flash: {}", e);
                     }
-                    last_device_write = std::time::Instant::now();
+                    last_device_write = Instant::now();
                 } else if state.waiting_flash_on {
                     // Reset flash state when no longer waiting
                     state.waiting_flash_on = false;
@@ -568,7 +602,7 @@ impl App {
                     if let Err(e) = self.update_display().await {
                         debug!("Failed to update display after volume overlay expired: {}", e);
                     }
-                    last_device_write = std::time::Instant::now();
+                    last_device_write = Instant::now();
                 }
                 volume_overlay_was_active = volume_overlay_active;
             }
@@ -580,25 +614,40 @@ impl App {
                     if let Err(e) = self.update_display().await {
                         debug!("Failed to update display after brightness overlay expired: {}", e);
                     }
-                    last_device_write = std::time::Instant::now();
+                    last_device_write = Instant::now();
                 }
                 brightness_overlay_was_active = brightness_overlay_active;
             }
 
             // Update GIF animations (respect device cooldown, skip during game)
             if !game_is_active
-                && last_gif_tick.elapsed() >= gif_tick_interval
+                && gif_tick.due()
                 && last_device_write.elapsed() >= device_cooldown
             {
-                last_gif_tick = std::time::Instant::now();
+                gif_tick.mark();
                 if let Err(e) = self.update_gif_animations().await {
                     debug!("GIF animation update skipped (device busy): {}", e);
                 } else {
-                    last_device_write = std::time::Instant::now();
+                    last_device_write = Instant::now();
                 }
             }
 
-            tokio::time::sleep(tokio::time::Duration::from_millis(1)).await;
+            // Redraw when background emoji fetches complete (non-blocking load path)
+            if !game_is_active
+                && display::emoji::take_needs_redraw()
+                && last_device_write.elapsed() >= device_cooldown
+            {
+                if let Err(e) = self.refresh_all_buttons().await {
+                    debug!("Failed to refresh buttons after emoji load: {}", e);
+                } else {
+                    last_device_write = Instant::now();
+                }
+            }
+
+            // When no device, poll isn't waiting — pace the loop ourselves
+            if self.device.is_none() {
+                tokio::time::sleep(device::POLL_TIMEOUT).await;
+            }
         }
     }
 
@@ -630,11 +679,6 @@ impl App {
 
     /// Redraw all buttons (called when app profile changes)
     async fn redraw_all_buttons(&self) -> Result<()> {
-        let device = match self.device.as_ref() {
-            Some(d) => d,
-            None => return Ok(()),
-        };
-
         // Clear all GIF animations - new profile may have different GIFs or none
         {
             let animator = display::gif_animator();
@@ -644,9 +688,23 @@ impl App {
             }
         }
 
+        self.render_all_buttons().await
+    }
+
+    /// Re-render all buttons without clearing GIF animation state.
+    /// Used when background assets (emoji) finish loading.
+    async fn refresh_all_buttons(&self) -> Result<()> {
+        self.render_all_buttons().await
+    }
+
+    async fn render_all_buttons(&self) -> Result<()> {
+        let device = match self.device.as_ref() {
+            Some(d) => d,
+            None => return Ok(()),
+        };
+
         let state = self.state.read().await;
 
-        // Render all buttons with current profile
         for button_id in 0..10u8 {
             let display_key = button_to_display_key(button_id);
             let image = self.display.render_button(button_id, false, &state)?;
@@ -707,14 +765,11 @@ impl App {
 
     /// Find all button IDs that have a MIC action configured in the current profile
     fn find_mic_buttons(&self, state: &state::AppState) -> Vec<u8> {
-        use profiles::ButtonAction;
-
         let manager = self.profile_manager.read().unwrap();
         let mut mic_buttons = Vec::new();
         if let Some(profile) = manager.find_profile_for_app(&state.focused_app) {
             for button in &profile.buttons {
-                let config = button.to_button_config();
-                if matches!(&config.action, ButtonAction::Custom(action) if *action == "MIC") {
+                if button.is_mic_action() {
                     mic_buttons.push(button.position);
                 }
             }
@@ -793,6 +848,9 @@ impl App {
 
     /// Update GIF animations and redraw changed buttons
     async fn update_gif_animations(&self) -> Result<()> {
+        // Kick off any newly registered GIF URLs (e.g. from a prior render)
+        self.start_gif_background_loading();
+
         let device = match self.device.as_ref() {
             Some(d) => d,
             None => return Ok(()),
@@ -927,39 +985,105 @@ impl App {
 
     /// Render only dirty buttons + strip for the game (incremental update)
     async fn update_game_display(&mut self) -> anyhow::Result<()> {
-        let device = match self.device.as_ref() {
-            Some(d) => d,
-            None => return Ok(()),
-        };
+        if self.device.is_none() || self.game.is_none() {
+            return Ok(());
+        }
 
-        if let Some(ref mut game) = self.game {
-            let mut any_sent = false;
+        let mut any_sent = false;
+        let mut deferred_events = Vec::new();
 
-            // Update dirty buttons
-            for button_id in 0..10u8 {
-                if game.is_button_dirty(button_id) {
-                    let display_key = device::button_to_display_key(button_id);
-                    let image = game.render_button(button_id);
-                    device.set_button_image(display_key, image).await?;
-                    any_sent = true;
+        // Apply any turns that arrived while we were idle before starting HID writes
+        self.drain_game_input_during_render(&mut deferred_events)
+            .await;
+
+        // Snapshot which buttons need redraw (dirty flags change if turns arrive mid-render)
+        for button_id in 0..10u8 {
+            let image = {
+                let game = self.game.as_mut().unwrap();
+                if !game.is_button_dirty(button_id) {
+                    continue;
                 }
-            }
+                game.render_button(button_id)
+            };
+            let display_key = device::button_to_display_key(button_id);
+            self.device
+                .as_ref()
+                .unwrap()
+                .set_button_image(display_key, image)
+                .await?;
+            any_sent = true;
 
-            // Update strip if dirty
+            // HID image writes are slow — keep draining encoder turns between them
+            self.drain_game_input_during_render(&mut deferred_events)
+                .await;
+        }
+
+        let strip_image = {
+            let game = self.game.as_mut().unwrap();
             if game.is_strip_dirty() {
-                let strip_image = game.render_strip(self.display.font());
-                device.set_strip_image(strip_image).await?;
-                any_sent = true;
+                Some(game.render_strip(self.display.font()))
+            } else {
+                None
             }
+        };
+        if let Some(strip_image) = strip_image {
+            self.device
+                .as_ref()
+                .unwrap()
+                .set_strip_image(strip_image)
+                .await?;
+            any_sent = true;
+            self.drain_game_input_during_render(&mut deferred_events)
+                .await;
+        }
 
-            game.clear_dirty();
+        self.game.as_mut().unwrap().clear_dirty();
 
-            if any_sent {
-                device.flush().await?;
+        // Turns drained during the final HID write still need HUD refresh
+        if let Some(game::ActiveGame::Snake(snake)) = self.game.as_mut() {
+            if snake.has_pending_turns() {
+                snake.mark_strip_dirty();
             }
         }
 
+        if any_sent {
+            self.device.as_ref().unwrap().flush().await?;
+        }
+
+        // Handle non-rotation events that arrived during rendering (button start, game cycle, etc.)
+        for ev in deferred_events {
+            self.handle_game_input(&ev).await;
+        }
+
+        // Turns drained during HID writes already nudged last_move — apply due steps now
+        // so a rapid spin isn't stuck waiting for the next game_tick (avoids mid-blit ticks).
+        if let Some(ref mut game) = self.game {
+            game.tick();
+        }
+
         Ok(())
+    }
+
+    /// Drain HID reports while rendering: apply encoder turns immediately, defer the rest
+    async fn drain_game_input_during_render(&mut self, deferred: &mut Vec<device::InputEvent>) {
+        let mut rotates = Vec::new();
+
+        if let Some(ref mut device) = self.device {
+            while let Ok(Some(ev)) = device.poll_event_nowait().await {
+                match ev {
+                    device::InputEvent::EncoderRotate { encoder, direction } => {
+                        rotates.push((encoder, direction));
+                    }
+                    other => deferred.push(other),
+                }
+            }
+        }
+
+        if let Some(ref mut game) = self.game {
+            for (encoder, direction) in rotates {
+                game.handle_encoder_rotate(encoder, direction);
+            }
+        }
     }
 
     /// Gracefully shutdown the application

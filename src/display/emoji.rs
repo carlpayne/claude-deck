@@ -1,11 +1,53 @@
 //! Emoji image fetching and caching using Twemoji CDN
+//!
+//! Network fetches never block the render path. On cache miss, a background
+//! task downloads the image; callers get `None` until it arrives, then the
+//! main loop can redraw via [`take_needs_redraw`].
 
 use anyhow::{Context, Result};
 use image::RgbaImage;
+use std::collections::{HashMap, HashSet};
+use std::io::Read;
 use std::path::PathBuf;
+use std::sync::{Arc, Mutex};
 use tracing::{debug, info, warn};
 
 const TWEMOJI_CDN: &str = "https://cdn.jsdelivr.net/gh/twitter/twemoji@latest/assets/72x72";
+
+struct EmojiCache {
+    /// In-memory images (`None` = permanently failed)
+    images: HashMap<String, Option<Arc<RgbaImage>>>,
+    /// Codepoints currently being fetched
+    loading: HashSet<String>,
+    /// Set when a background fetch completes successfully
+    needs_redraw: bool,
+}
+
+impl EmojiCache {
+    fn new() -> Self {
+        Self {
+            images: HashMap::new(),
+            loading: HashSet::new(),
+            needs_redraw: false,
+        }
+    }
+}
+
+static EMOJI_CACHE: std::sync::OnceLock<Mutex<EmojiCache>> = std::sync::OnceLock::new();
+
+fn cache() -> &'static Mutex<EmojiCache> {
+    EMOJI_CACHE.get_or_init(|| Mutex::new(EmojiCache::new()))
+}
+
+/// Returns true (and clears the flag) if any emoji finished loading since last check.
+pub fn take_needs_redraw() -> bool {
+    let Ok(mut guard) = cache().lock() else {
+        return false;
+    };
+    let needs = guard.needs_redraw;
+    guard.needs_redraw = false;
+    needs
+}
 
 /// Get the emoji cache directory
 fn cache_dir() -> Result<PathBuf> {
@@ -36,35 +78,100 @@ pub fn is_codepoint(s: &str) -> bool {
     !s.is_empty() && s.chars().all(|c| c.is_ascii_hexdigit() || c == '-')
 }
 
-/// Get an emoji image, fetching from CDN if not cached
+/// Get an emoji image without blocking on the network.
 ///
 /// `emoji_ref` can be:
 /// - An emoji character: "😀"
 /// - A codepoint: "1f600"
-/// - A legacy image name: "thumbsup" (falls back to assets/emoji/)
-pub fn get_emoji_image(emoji_ref: &str) -> Option<RgbaImage> {
-    // Determine if this is an emoji, codepoint, or legacy name
+/// - A legacy image name: "thumbsup" (falls back to Twemoji via name map)
+///
+/// Returns `None` while a background fetch is in progress (or on failure).
+/// Call [`take_needs_redraw`] from the main loop to refresh buttons when ready.
+pub fn get_emoji_image(emoji_ref: &str) -> Option<Arc<RgbaImage>> {
     let codepoint = if is_emoji(emoji_ref) {
         emoji_to_codepoint(emoji_ref)
     } else if is_codepoint(emoji_ref) {
         emoji_ref.to_lowercase()
+    } else if let Some(emoji) = legacy_name_to_emoji(emoji_ref) {
+        debug!("Converting legacy emoji '{}' to '{}'", emoji_ref, emoji);
+        emoji_to_codepoint(emoji)
     } else {
-        // Legacy: try to load from assets/emoji/{name}.png
-        return load_legacy_emoji(emoji_ref);
+        warn!("Unknown legacy emoji name: {}", emoji_ref);
+        return None;
     };
 
-    // Try to load from cache
-    if let Some(img) = load_cached_emoji(&codepoint) {
-        return Some(img);
+    get_or_fetch_codepoint(&codepoint)
+}
+
+fn get_or_fetch_codepoint(codepoint: &str) -> Option<Arc<RgbaImage>> {
+    // Fast path: in-memory cache
+    {
+        let Ok(guard) = cache().lock() else {
+            return None;
+        };
+        if let Some(entry) = guard.images.get(codepoint) {
+            return entry.clone();
+        }
+        if guard.loading.contains(codepoint) {
+            return None;
+        }
     }
 
-    // Fetch from CDN (blocking - we're in sync context)
-    match fetch_and_cache_emoji(&codepoint) {
-        Ok(img) => Some(img),
-        Err(e) => {
-            warn!("Failed to fetch emoji {}: {}", codepoint, e);
-            None
+    // Disk cache (local I/O only — no network)
+    if let Some(img) = load_cached_emoji(codepoint) {
+        let arc = Arc::new(img);
+        if let Ok(mut guard) = cache().lock() {
+            guard.images.insert(codepoint.to_string(), Some(Arc::clone(&arc)));
         }
+        return Some(arc);
+    }
+
+    // Kick off background fetch; render path stays non-blocking
+    start_background_fetch(codepoint.to_string());
+    None
+}
+
+fn start_background_fetch(codepoint: String) {
+    {
+        let Ok(mut guard) = cache().lock() else {
+            return;
+        };
+        if guard.images.contains_key(&codepoint) || guard.loading.contains(&codepoint) {
+            return;
+        }
+        guard.loading.insert(codepoint.clone());
+    }
+
+    let fetch = move || {
+        let result = fetch_and_cache_emoji(&codepoint);
+        let stored = match result {
+            Ok(img) => {
+                info!("Emoji loaded: {}", codepoint);
+                Some(Arc::new(img))
+            }
+            Err(e) => {
+                warn!("Failed to fetch emoji {}: {}", codepoint, e);
+                None
+            }
+        };
+
+        if let Ok(mut guard) = cache().lock() {
+            guard.loading.remove(&codepoint);
+            let success = stored.is_some();
+            guard.images.insert(codepoint, stored);
+            if success {
+                guard.needs_redraw = true;
+            }
+        }
+    };
+
+    if let Ok(handle) = tokio::runtime::Handle::try_current() {
+        handle.spawn(async move {
+            let _ = tokio::task::spawn_blocking(fetch).await;
+        });
+    } else {
+        // Tests / no runtime: still keep the call site non-blocking
+        std::thread::spawn(fetch);
     }
 }
 
@@ -81,12 +188,11 @@ fn load_cached_emoji(codepoint: &str) -> Option<RgbaImage> {
     }
 }
 
-/// Fetch emoji from Twemoji CDN and cache it
+/// Fetch emoji from Twemoji CDN and cache it (blocking — background only)
 fn fetch_and_cache_emoji(codepoint: &str) -> Result<RgbaImage> {
     let url = format!("{}/{}.png", TWEMOJI_CDN, codepoint);
     info!("Fetching emoji from CDN: {}", url);
 
-    // Use a simple blocking HTTP request
     let response = ureq::get(&url)
         .call()
         .context("Failed to fetch emoji from CDN")?;
@@ -95,17 +201,16 @@ fn fetch_and_cache_emoji(codepoint: &str) -> Result<RgbaImage> {
         anyhow::bail!("CDN returned status {}", response.status());
     }
 
-    // Read the image data
     let mut data = Vec::new();
-    response.into_reader().read_to_end(&mut data)
+    response
+        .into_reader()
+        .read_to_end(&mut data)
         .context("Failed to read emoji data")?;
 
-    // Parse as image
     let img = image::load_from_memory(&data)
         .context("Failed to parse emoji image")?
         .to_rgba8();
 
-    // Cache it
     let cache_path = cache_dir()?;
     let file_path = cache_path.join(format!("{}.png", codepoint));
     img.save(&file_path).context("Failed to cache emoji")?;
@@ -158,29 +263,6 @@ fn legacy_name_to_emoji(name: &str) -> Option<&'static str> {
         "pray" => Some("🙏"),
         _ => None,
     }
-}
-
-/// Load legacy emoji by converting name to emoji and fetching from Twemoji
-fn load_legacy_emoji(name: &str) -> Option<RgbaImage> {
-    // Convert legacy name to emoji character
-    if let Some(emoji) = legacy_name_to_emoji(name) {
-        debug!("Converting legacy emoji '{}' to '{}'", name, emoji);
-        let codepoint = emoji_to_codepoint(emoji);
-
-        // Try cache first
-        if let Some(img) = load_cached_emoji(&codepoint) {
-            return Some(img);
-        }
-
-        // Fetch from CDN
-        match fetch_and_cache_emoji(&codepoint) {
-            Ok(img) => return Some(img),
-            Err(e) => warn!("Failed to fetch emoji for legacy '{}': {}", name, e),
-        }
-    }
-
-    warn!("Unknown legacy emoji name: {}", name);
-    None
 }
 
 #[cfg(test)]

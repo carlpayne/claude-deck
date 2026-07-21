@@ -26,9 +26,17 @@ pub async fn serve_static(path: &str) -> impl IntoResponse {
                 .first_or_octet_stream()
                 .to_string();
 
+            let cache_control = if path.ends_with(".html") {
+                "no-cache"
+            } else {
+                // Embedded assets are versioned with the binary
+                "public, max-age=86400"
+            };
+
             Response::builder()
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, mime)
+                .header(header::CACHE_CONTROL, cache_control)
                 .body(Body::from(content.data.to_vec()))
                 .unwrap()
         }
@@ -39,6 +47,7 @@ pub async fn serve_static(path: &str) -> impl IntoResponse {
                     return Response::builder()
                         .status(StatusCode::OK)
                         .header(header::CONTENT_TYPE, "text/html")
+                        .header(header::CACHE_CONTROL, "no-cache")
                         .body(Body::from(content.data.to_vec()))
                         .unwrap();
                 }

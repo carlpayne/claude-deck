@@ -1,9 +1,7 @@
 use anyhow::Result;
 use image::{Rgb, RgbImage};
 use rusttype::{Font, Scale};
-use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
-use tracing::debug;
 
 use crate::config::Config;
 use crate::profiles::ProfileManager;
@@ -29,10 +27,6 @@ pub const BRIGHT_ORANGE: Rgb<u8> = Rgb([255, 180, 60]);
 /// Warm background for waiting-flash "on" phase
 pub const WAITING_GLOW_BG: Rgb<u8> = Rgb([80, 45, 5]);
 pub const DARK_BG: Rgb<u8> = Rgb([15, 15, 22]);
-#[allow(dead_code)]
-pub const BUTTON_BG: Rgb<u8> = Rgb([25, 28, 38]);
-#[allow(dead_code)]
-pub const BUTTON_ACTIVE: Rgb<u8> = Rgb([0, 120, 80]);
 
 /// Button color scheme by ID
 pub fn button_colors(button_id: u8) -> (Rgb<u8>, Rgb<u8>) {
@@ -54,14 +48,11 @@ pub fn button_colors(button_id: u8) -> (Rgb<u8>, Rgb<u8>) {
 /// Renders images for the device display
 pub struct DisplayRenderer {
     font: Font<'static>,
-    #[allow(dead_code)]
-    config: Config,
-    icon_cache: HashMap<String, RgbImage>,
     profile_manager: Arc<RwLock<ProfileManager>>,
 }
 
 impl DisplayRenderer {
-    pub fn new(config: &Config, profile_manager: Arc<RwLock<ProfileManager>>) -> Result<Self> {
+    pub fn new(_config: &Config, profile_manager: Arc<RwLock<ProfileManager>>) -> Result<Self> {
         // Load embedded font (or fall back to system font)
         let font_data = include_bytes!("../../assets/fonts/JetBrainsMono-Bold.ttf");
         let font = Font::try_from_bytes(font_data as &[u8])
@@ -69,8 +60,6 @@ impl DisplayRenderer {
 
         Ok(Self {
             font,
-            config: config.clone(),
-            icon_cache: HashMap::new(),
             profile_manager,
         })
     }
@@ -96,7 +85,7 @@ impl DisplayRenderer {
         };
 
         // Check if this button has MIC action - needs special rendering with mic icon
-        if matches!(&button_config.action, ButtonAction::Custom(action) if *action == "MIC") {
+        if matches!(&button_config.action, ButtonAction::Custom(action) if action.eq_ignore_ascii_case("MIC")) {
             return super::buttons::render_mic_button(
                 &self.font,
                 active,
@@ -173,20 +162,6 @@ impl DisplayRenderer {
     /// Render the full LCD strip (800x128)
     pub fn render_strip(&self, state: &AppState) -> Result<RgbImage> {
         render_strip_image(&self.font, state)
-    }
-
-    /// Load and cache an icon
-    #[allow(dead_code)]
-    pub fn load_icon(&mut self, name: &str) -> Option<&RgbImage> {
-        if !self.icon_cache.contains_key(name) {
-            let path = format!("assets/icons/{}", name);
-            if let Ok(img) = image::open(&path) {
-                let rgb = img.to_rgb8();
-                self.icon_cache.insert(name.to_string(), rgb);
-                debug!("Loaded icon: {}", name);
-            }
-        }
-        self.icon_cache.get(name)
     }
 }
 

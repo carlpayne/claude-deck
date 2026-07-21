@@ -13,6 +13,13 @@ let currentCustomImage = null;  // Base64 data URL for custom image
 let installedApps = [];  // List of installed macOS apps
 let draggedButton = null;  // Currently dragged button position
 let selectedGifUrl = null;  // Currently selected GIF URL
+let profileLoadController = null;  // AbortController for profile switches
+let statusPollTimer = null;
+let statusPollDelay = 500;
+let gifUrlDebounceTimer = null;
+
+const STATUS_POLL_MIN = 500;
+const STATUS_POLL_MAX = 8000;
 
 // DOM Elements
 const elements = {
@@ -74,6 +81,11 @@ const elements = {
     gifPreviewContainer: document.getElementById('gif-preview-container'),
     gifPreview: document.getElementById('gif-preview'),
     clearGifBtn: document.getElementById('clear-gif'),
+    copyButtonModal: document.getElementById('copy-button-modal'),
+    copyPositionGrid: document.getElementById('copy-position-grid'),
+    copyModalHint: document.getElementById('copy-modal-hint'),
+    btnCancelCopy: document.getElementById('btn-cancel-copy'),
+    toastContainer: document.getElementById('toast-container'),
 };
 
 // Initialize
@@ -94,22 +106,40 @@ async function init() {
     }
 }
 
-// LCD Status Polling
-let statusPollInterval = null;
-
+// LCD Status Polling — pauses when tab is hidden, backs off on errors
 function startStatusPolling() {
-    // Poll immediately, then every 500ms
-    pollStatus();
-    statusPollInterval = setInterval(pollStatus, 500);
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'visible') {
+            statusPollDelay = STATUS_POLL_MIN;
+            scheduleStatusPoll(0);
+        } else {
+            clearTimeout(statusPollTimer);
+            statusPollTimer = null;
+        }
+    });
+    scheduleStatusPoll(0);
+}
+
+function scheduleStatusPoll(delay = statusPollDelay) {
+    clearTimeout(statusPollTimer);
+    if (document.visibilityState === 'hidden') return;
+    statusPollTimer = setTimeout(pollStatus, delay);
 }
 
 async function pollStatus() {
+    if (document.visibilityState === 'hidden') return;
+
     try {
         const status = await api('/status');
         updateLcdDisplay(status);
+        setConnected(true);
+        statusPollDelay = STATUS_POLL_MIN;
     } catch (error) {
-        // Silently fail - status endpoint might not be available
+        setConnected(false, 'Disconnected');
+        statusPollDelay = Math.min(statusPollDelay * 2, STATUS_POLL_MAX);
     }
+
+    scheduleStatusPoll();
 }
 
 function updateLcdDisplay(status) {
@@ -177,7 +207,7 @@ function updateLcdDisplay(status) {
             '</div>';
         elements.lcdStatus.className = 'lcd-value volume';
     } else {
-        // Normal status mode
+        // Normal status mode — prefer live device.connected from /api/status
         statusQuadrant.classList.remove('volume-active');
 
         let statusText = 'OFFLINE';
@@ -185,7 +215,11 @@ function updateLcdDisplay(status) {
         if (isWaiting) {
             statusText = 'WAITING FOR INPUT';
             statusClass = 'waiting';
-        } else if (status.processing || status.task !== 'READY') {
+        } else if (status.connected) {
+            statusText = 'CONNECTED';
+            statusClass = 'connected';
+        } else if (status.processing || (status.task && status.task !== 'READY')) {
+            // Claude activity without device flag (legacy / partial state)
             statusText = 'CONNECTED';
             statusClass = 'connected';
         } else if (status.timestamp && (Date.now() / 1000 - status.timestamp) < 30) {
@@ -206,12 +240,23 @@ function updateLcdDisplay(status) {
 // API Functions
 async function api(endpoint, options = {}) {
     const url = `${API_BASE}${endpoint}`;
+    const { headers: extraHeaders, ...rest } = options;
     const response = await fetch(url, {
         headers: {
             'Content-Type': 'application/json',
+            ...extraHeaders,
         },
-        ...options,
+        ...rest,
     });
+
+    if (!response.ok) {
+        let message = `HTTP ${response.status}`;
+        try {
+            const errBody = await response.json();
+            if (errBody.error) message = errBody.error;
+        } catch (_) { /* ignore */ }
+        throw new Error(message);
+    }
 
     const data = await response.json();
 
@@ -232,8 +277,8 @@ async function loadProfiles() {
     }
 }
 
-async function loadProfile(name) {
-    return await api(`/profiles/${name}`);
+async function loadProfile(name, signal) {
+    return await api(`/profiles/${name}`, signal ? { signal } : {});
 }
 
 async function updateButton(profileName, position, data) {
@@ -268,11 +313,6 @@ async function loadApps() {
     const data = await api('/apps');
     installedApps = data.apps;
     renderAppDropdown();
-}
-
-async function checkProfileHasDefaults(name) {
-    const data = await api(`/profiles/${name}/has-defaults`);
-    return data.has_defaults;
 }
 
 async function resetProfile(name) {
@@ -372,30 +412,50 @@ function createButtonCell(button) {
         // Display microphone emoji for MIC action
         content = `<span class="button-emoji">🎤</span>`;
     } else if (button.gif_url) {
-        // Display GIF
-        content = `<img class="button-image" src="${button.gif_url}" alt="${button.label}">`;
+        content = `<img class="button-image" src="${escapeAttr(button.gif_url)}" alt="${escapeAttr(button.label)}" onerror="this.onerror=null;this.outerHTML='<span class=\\'button-label\\'>?</span>'">`;
     } else if (button.emoji_image && isEmoji(button.emoji_image)) {
-        // Display emoji
         content = `<span class="button-emoji">${button.emoji_image}</span>`;
     } else if (button.custom_image) {
-        // Display custom uploaded image
-        content = `<img class="button-image" src="${button.custom_image}" alt="${button.label}">`;
+        content = `<img class="button-image" src="${escapeAttr(button.custom_image)}" alt="${escapeAttr(button.label)}" onerror="this.onerror=null;this.outerHTML='<span class=\\'button-label\\'>?</span>'">`;
     } else {
-        // Display text label
-        content = `<span class="button-label">${button.label}</span>`;
+        content = `<span class="button-label">${escapeHtml(button.label)}</span>`;
     }
 
     return `
         <div class="button-cell ${isSelected ? 'selected' : ''}"
              data-position="${button.position}"
              draggable="true"
-             title="${tooltip}"
+             role="button"
+             tabindex="0"
+             aria-pressed="${isSelected ? 'true' : 'false'}"
+             aria-label="${escapeAttr(tooltip)}"
+             title="${escapeAttr(tooltip)}"
              style="background: ${gradient}; border-color: ${button.color}">
             <span class="button-position">${button.position}</span>
-            ${hasConfig ? `<button class="btn-reset-tile" data-position="${button.position}" title="Reset button">✕</button>` : ''}
+            ${hasConfig ? `<button type="button" class="btn-reset-tile" data-position="${button.position}" title="Reset button" aria-label="Reset button ${button.position}">✕</button>` : ''}
             ${content}
         </div>
     `;
+}
+
+function escapeHtml(str) {
+    return String(str ?? '')
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+function escapeAttr(str) {
+    return escapeHtml(str).replace(/'/g, '&#39;');
+}
+
+function updateButtonSelection(position) {
+    document.querySelectorAll('.button-cell').forEach(cell => {
+        const selected = position !== null && parseInt(cell.dataset.position, 10) === position;
+        cell.classList.toggle('selected', selected);
+        cell.setAttribute('aria-pressed', selected ? 'true' : 'false');
+    });
 }
 
 // Generate tooltip text describing what the button does
@@ -455,9 +515,11 @@ const emojiToShortcode = {
     '🐛': ':bug:',
 };
 
-// Get shortcode for an emoji, or return the emoji itself
-function getEmojiShortcode(emoji) {
-    return emojiToShortcode[emoji] || emoji;
+function maybeFillEmojiAction(emoji) {
+    const shortcode = emojiToShortcode[emoji];
+    if (elements.editActionType.value === 'emoji' && shortcode) {
+        elements.editActionValue.value = shortcode;
+    }
 }
 
 // Parse a shortcut string like "Cmd+Shift+C" into modifiers and key
@@ -511,11 +573,12 @@ function clearModifiers() {
 
 function renderColorPresets() {
     elements.colorPresets.innerHTML = colorPresets.map(preset => `
-        <div class="color-preset"
+        <button type="button" class="color-preset"
              data-color="${preset.color}"
              style="background: ${preset.color}"
-             title="${preset.name}">
-        </div>
+             title="${preset.name}"
+             aria-label="${escapeAttr(preset.name)} color">
+        </button>
     `).join('');
 }
 
@@ -549,17 +612,14 @@ function renderCopyFromDropdown() {
     `;
 }
 
-async function updateProfileActions() {
+function updateProfileActions() {
     if (!currentProfile) {
         elements.btnReset.classList.add('hidden');
         elements.btnDelete.classList.add('hidden');
         return;
     }
 
-    // Check if profile has defaults (is a built-in profile)
-    const hasDefaults = await checkProfileHasDefaults(currentProfile.name);
-
-    if (hasDefaults) {
+    if (currentProfile.has_defaults) {
         elements.btnReset.classList.remove('hidden');
         elements.btnDelete.classList.add('hidden');
     } else {
@@ -781,13 +841,12 @@ function setupEventListeners() {
         }
     });
 
-    // Button grid - click to select
+    // Button grid - click / keyboard to select
     elements.buttonGrid.addEventListener('click', async (e) => {
-        // Check if reset button was clicked
         const resetBtn = e.target.closest('.btn-reset-tile');
         if (resetBtn) {
             e.stopPropagation();
-            const position = parseInt(resetBtn.dataset.position);
+            const position = parseInt(resetBtn.dataset.position, 10);
             if (confirm(`Reset button ${position} to default?`)) {
                 try {
                     await resetButton(currentProfile.name, position);
@@ -802,7 +861,16 @@ function setupEventListeners() {
 
         const cell = e.target.closest('.button-cell');
         if (cell) {
-            selectButton(parseInt(cell.dataset.position));
+            selectButton(parseInt(cell.dataset.position, 10));
+        }
+    });
+
+    elements.buttonGrid.addEventListener('keydown', (e) => {
+        const cell = e.target.closest('.button-cell');
+        if (!cell) return;
+        if (e.key === 'Enter' || e.key === ' ') {
+            e.preventDefault();
+            selectButton(parseInt(cell.dataset.position, 10));
         }
     });
 
@@ -934,13 +1002,25 @@ function setupEventListeners() {
     elements.btnCancel.addEventListener('click', () => {
         currentButton = null;
         renderEditor();
-        renderButtonGrid();
+        updateButtonSelection(null);
     });
 
     // Copy button
     elements.btnCopy.addEventListener('click', () => {
         if (!currentButton) return;
-        copyButtonToPosition();
+        openCopyModal();
+    });
+
+    elements.btnCancelCopy.addEventListener('click', closeCopyModal);
+    elements.copyButtonModal.addEventListener('click', (e) => {
+        if (e.target === elements.copyButtonModal) closeCopyModal();
+    });
+    elements.copyPositionGrid.addEventListener('click', async (e) => {
+        const btn = e.target.closest('.copy-position-btn');
+        if (!btn) return;
+        const targetPos = parseInt(btn.dataset.position, 10);
+        closeCopyModal();
+        await copyButtonToPosition(targetPos);
     });
 
     // Reload button
@@ -957,8 +1037,8 @@ function setupEventListeners() {
         const option = e.target.closest('.emoji-option');
         if (option) {
             elements.editEmojiImage.value = option.dataset.emoji;
-            // Clear custom image when emoji is selected
             clearCustomImage();
+            maybeFillEmojiAction(option.dataset.emoji);
         }
     });
 
@@ -966,6 +1046,7 @@ function setupEventListeners() {
     elements.editEmojiImage.addEventListener('input', () => {
         if (elements.editEmojiImage.value) {
             clearCustomImage();
+            maybeFillEmojiAction(elements.editEmojiImage.value);
         }
     });
 
@@ -1008,17 +1089,24 @@ function setupEventListeners() {
         clearCustomImage();
     });
 
-    // GIF URL input - show preview when URL is pasted/entered
+    // GIF URL input — debounced preview
     elements.gifUrlInput.addEventListener('input', () => {
-        const url = elements.gifUrlInput.value.trim();
-        if (url) {
-            selectedGifUrl = url;
-            elements.gifPreview.src = url;
-            elements.gifPreviewContainer.classList.remove('hidden');
-        } else {
-            selectedGifUrl = null;
-            elements.gifPreviewContainer.classList.add('hidden');
-        }
+        clearTimeout(gifUrlDebounceTimer);
+        gifUrlDebounceTimer = setTimeout(() => {
+            const url = elements.gifUrlInput.value.trim();
+            if (url) {
+                selectedGifUrl = url;
+                elements.gifPreview.onerror = () => {
+                    showToast('Could not load GIF preview', 'error');
+                    elements.gifPreviewContainer.classList.add('hidden');
+                };
+                elements.gifPreview.src = url;
+                elements.gifPreviewContainer.classList.remove('hidden');
+            } else {
+                selectedGifUrl = null;
+                elements.gifPreviewContainer.classList.add('hidden');
+            }
+        }, 300);
     });
 
     // GIF search
@@ -1086,6 +1174,17 @@ function setupEventListeners() {
     elements.createProfileModal.addEventListener('click', (e) => {
         if (e.target === elements.createProfileModal) {
             elements.createProfileModal.classList.add('hidden');
+        }
+    });
+
+    // Escape closes open modals
+    document.addEventListener('keydown', (e) => {
+        if (e.key !== 'Escape') return;
+        if (!elements.createProfileModal.classList.contains('hidden')) {
+            elements.createProfileModal.classList.add('hidden');
+        }
+        if (!elements.copyButtonModal.classList.contains('hidden')) {
+            closeCopyModal();
         }
     });
 
@@ -1244,19 +1343,28 @@ function selectGif(url, previewUrl) {
 }
 
 async function selectProfile(name) {
+    if (profileLoadController) {
+        profileLoadController.abort();
+    }
+    profileLoadController = new AbortController();
+    const { signal } = profileLoadController;
+
     try {
-        currentProfile = await loadProfile(name);
+        const profile = await loadProfile(name, signal);
+        if (signal.aborted) return;
+
+        currentProfile = profile;
         currentButton = null;
 
-        // Update tab selection
         document.querySelectorAll('.profile-tab').forEach(tab => {
             tab.classList.toggle('active', tab.dataset.profile === name);
         });
 
         renderButtonGrid();
         renderEditor();
-        await updateProfileActions();
+        updateProfileActions();
     } catch (error) {
+        if (error.name === 'AbortError') return;
         showToast(`Failed to load profile: ${error.message}`, 'error');
     }
 }
@@ -1266,7 +1374,7 @@ function selectButton(position) {
     if (button) {
         currentButton = { ...button };
         renderEditor();
-        renderButtonGrid();
+        updateButtonSelection(position);
     }
 }
 
@@ -1327,25 +1435,51 @@ async function saveButton() {
         color: elements.editColor.value,
         bright_color: elements.editBrightColor.value,
         action: action,
-        emoji_image: emoji_image,
-        custom_image: custom_image,
-        gif_url: gif_url,
     };
 
-    try {
-        await updateButton(currentProfile.name, currentButton.position, data);
+    // Only send image fields when they actually change (avoids re-uploading base64)
+    const prevEmoji = currentButton.emoji_image || '';
+    const prevCustom = currentButton.custom_image || '';
+    const prevGif = currentButton.gif_url || '';
+    if (emoji_image !== prevEmoji) data.emoji_image = emoji_image;
+    if (custom_image !== prevCustom) data.custom_image = custom_image;
+    if (gif_url !== prevGif) data.gif_url = gif_url;
 
-        // Update local state
+    const saveBtn = elements.editorForm.querySelector('button[type="submit"]');
+    if (saveBtn) {
+        saveBtn.disabled = true;
+        saveBtn.textContent = 'Saving…';
+    }
+
+    try {
+        const saved = await updateButton(currentProfile.name, currentButton.position, data);
+
+        // Update local state from server response when available
+        const merged = saved
+            ? { ...saved }
+            : {
+                ...currentButton,
+                ...data,
+                emoji_image: emoji_image || null,
+                custom_image: custom_image || null,
+                gif_url: gif_url || null,
+            };
+
         const idx = currentProfile.buttons.findIndex(b => b.position === currentButton.position);
         if (idx !== -1) {
-            currentProfile.buttons[idx] = { ...currentProfile.buttons[idx], ...data };
+            currentProfile.buttons[idx] = merged;
         }
-        currentButton = { ...currentButton, ...data };
+        currentButton = { ...merged };
 
         renderButtonGrid();
         showToast('Button saved', 'success');
     } catch (error) {
         showToast(`Failed to save: ${error.message}`, 'error');
+    } finally {
+        if (saveBtn) {
+            saveBtn.disabled = false;
+            saveBtn.textContent = 'Save';
+        }
     }
 }
 
@@ -1357,33 +1491,44 @@ function setConnected(connected, errorMessage = null) {
         connected ? 'Connected' : (errorMessage || 'Disconnected');
 }
 
-// Copy current button config to another position
-async function copyButtonToPosition() {
+function openCopyModal() {
     if (!currentProfile || !currentButton) return;
 
-    // Get available positions (0-9 except current)
-    const positions = [];
+    elements.copyModalHint.textContent =
+        `Copy "${currentButton.label}" to which position?`;
+
+    elements.copyPositionGrid.innerHTML = '';
     for (let i = 0; i < 10; i++) {
-        if (i !== currentButton.position) {
-            const btn = currentProfile.buttons.find(b => b.position === i);
-            const label = btn ? btn.label : '?';
-            positions.push({ pos: i, label });
-        }
+        if (i === currentButton.position) continue;
+        const btn = currentProfile.buttons.find(b => b.position === i);
+        const label = btn ? btn.label : '?';
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'copy-position-btn';
+        item.dataset.position = String(i);
+        item.setAttribute('role', 'option');
+        item.textContent = `${i}: ${label}`;
+        elements.copyPositionGrid.appendChild(item);
     }
 
-    // Create a simple prompt with position options
-    const posStr = positions.map(p => `${p.pos}`).join(', ');
-    const targetStr = prompt(`Copy "${currentButton.label}" to which position?\nAvailable: ${posStr}`);
+    elements.copyButtonModal.classList.remove('hidden');
+    const first = elements.copyPositionGrid.querySelector('.copy-position-btn');
+    if (first) first.focus();
+}
 
-    if (targetStr === null) return; // Cancelled
+function closeCopyModal() {
+    elements.copyButtonModal.classList.add('hidden');
+}
 
-    const targetPos = parseInt(targetStr.trim());
+// Copy current button config to another position
+async function copyButtonToPosition(targetPos) {
+    if (!currentProfile || !currentButton) return;
+
     if (isNaN(targetPos) || targetPos < 0 || targetPos > 9 || targetPos === currentButton.position) {
         showToast('Invalid position', 'error');
         return;
     }
 
-    // Copy the button data (excluding position)
     const data = {
         label: currentButton.label,
         color: currentButton.color,
@@ -1404,17 +1549,16 @@ async function copyButtonToPosition() {
 }
 
 function showToast(message, type = 'info') {
+    const container = elements.toastContainer || document.body;
     const toast = document.createElement('div');
     toast.className = `toast ${type}`;
     toast.textContent = message;
-    document.body.appendChild(toast);
+    container.appendChild(toast);
 
-    // Trigger animation
     requestAnimationFrame(() => {
         toast.classList.add('show');
     });
 
-    // Remove after delay
     setTimeout(() => {
         toast.classList.remove('show');
         setTimeout(() => toast.remove(), 300);

@@ -22,6 +22,16 @@ const KEY_RELEASE_TIMEOUT_MS: u128 = 150;
 
 const STRIP_BG: Rgb<u8> = Rgb([12, 14, 20]);
 
+/// Precomputed nearest-neighbor X mapping for strip scale (800 → 560)
+fn strip_x_map() -> &'static [usize] {
+    static MAP: OnceLock<Vec<usize>> = OnceLock::new();
+    MAP.get_or_init(|| {
+        (0..STRIP_WIDTH as usize)
+            .map(|px| px * SCALED_WIDTH / STRIP_WIDTH as usize)
+            .collect()
+    })
+}
+
 // --- Singleton doom thread state ---
 // doomgeneric only supports a single init() call for the process lifetime.
 // The doom thread + channels persist forever, DoomGame reconnects on each create.
@@ -189,26 +199,20 @@ impl DoomGame {
                 }
             }
             DoomState::Playing => {
-                // Slice 112x112 region from the scaled frame
-                // Button layout: 5 columns x 2 rows
+                // Slice 112x112 region from the scaled frame (5 cols × 2 rows)
                 let col = bid % 5;
                 let row = bid / 5;
-                let x0 = col * 112;
-                let y0 = row * 112;
+                let x0 = col * BUTTON_WIDTH as usize;
+                let y0 = row * BUTTON_HEIGHT as usize;
+                let row_bytes = BUTTON_WIDTH as usize * 3;
+                let dst = img.as_mut();
 
-                for py in 0..112u32 {
-                    for px in 0..112u32 {
-                        let src_x = x0 + px as usize;
-                        let src_y = y0 + py as usize;
-                        if src_x < SCALED_WIDTH && src_y < SCALED_HEIGHT {
-                            let idx = (src_y * SCALED_WIDTH + src_x) * 3;
-                            if idx + 2 < self.current_frame.len() {
-                                let r = self.current_frame[idx];
-                                let g = self.current_frame[idx + 1];
-                                let b = self.current_frame[idx + 2];
-                                img.put_pixel(px, py, Rgb([r, g, b]));
-                            }
-                        }
+                for py in 0..BUTTON_HEIGHT as usize {
+                    let src_row = ((y0 + py) * SCALED_WIDTH + x0) * 3;
+                    let dst_row = py * row_bytes;
+                    if src_row + row_bytes <= self.current_frame.len() {
+                        dst[dst_row..dst_row + row_bytes]
+                            .copy_from_slice(&self.current_frame[src_row..src_row + row_bytes]);
                     }
                 }
             }
@@ -245,20 +249,25 @@ impl DoomGame {
             DoomState::Playing => {
                 // Stretch bottom 128 rows of doom frame (560px) to fill full strip (800px)
                 let y_start = 224usize; // rows 224..352 go to strip
+                let x_map = strip_x_map();
+                let dst = img.as_mut();
+                let dst_width = STRIP_WIDTH as usize;
 
-                for py in 0..STRIP_HEIGHT {
-                    for px in 0..STRIP_WIDTH {
-                        // Nearest-neighbor horizontal scale: 800 → 560
-                        let src_x = px as usize * SCALED_WIDTH / STRIP_WIDTH as usize;
-                        let src_y = y_start + py as usize;
-                        if src_y < SCALED_HEIGHT && src_x < SCALED_WIDTH {
-                            let idx = (src_y * SCALED_WIDTH + src_x) * 3;
-                            if idx + 2 < self.current_frame.len() {
-                                let r = self.current_frame[idx];
-                                let g = self.current_frame[idx + 1];
-                                let b = self.current_frame[idx + 2];
-                                img.put_pixel(px, py, Rgb([r, g, b]));
-                            }
+                for py in 0..STRIP_HEIGHT as usize {
+                    let src_y = y_start + py;
+                    if src_y >= SCALED_HEIGHT {
+                        break;
+                    }
+                    let src_row = src_y * SCALED_WIDTH * 3;
+                    let dst_row = py * dst_width * 3;
+                    for px in 0..dst_width {
+                        let src_x = x_map[px];
+                        let src_idx = src_row + src_x * 3;
+                        let dst_idx = dst_row + px * 3;
+                        if src_idx + 2 < self.current_frame.len() {
+                            dst[dst_idx] = self.current_frame[src_idx];
+                            dst[dst_idx + 1] = self.current_frame[src_idx + 1];
+                            dst[dst_idx + 2] = self.current_frame[src_idx + 2];
                         }
                     }
                 }

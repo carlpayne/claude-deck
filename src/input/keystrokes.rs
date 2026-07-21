@@ -1,6 +1,8 @@
 use enigo::{Enigo, Key as EnigoKey, Keyboard, Settings};
+use std::sync::mpsc;
+use std::thread;
 use std::time::Duration;
-use tracing::debug;
+use tracing::{debug, warn};
 
 /// Key types for input
 #[derive(Debug, Clone)]
@@ -116,65 +118,70 @@ pub fn string_to_key(s: &str) -> Option<Key> {
     }
 }
 
-/// Sends keystrokes to the focused window (attach mode)
+/// Commands executed on the dedicated keystroke thread
+enum KeystrokeCmd {
+    Key(Key),
+    Text(String),
+    Shortcut(KeyboardShortcut),
+    ShortcutString(String),
+    ShiftTab,
+    AltM,
+    EscapeM,
+    ZoomIn,
+    ZoomOut,
+    ResetZoom,
+    SelectAll,
+    CtrlU,
+    Undo,
+    Retry,
+    Clear,
+    Rewind,
+    NavigateHistory(i8),
+    ScrollOutput(i8),
+    ModelSwitch(String),
+    DictationToggle,
+    DictationWarmup,
+}
+
+/// Sends keystrokes to the focused window via a dedicated background thread.
+///
+/// All public methods are non-blocking — delays for multi-key sequences stay
+/// off the async main loop so device I/O and animations keep running.
+#[derive(Clone)]
 pub struct KeystrokeSender {
-    enigo: Enigo,
+    tx: mpsc::Sender<KeystrokeCmd>,
 }
 
 impl KeystrokeSender {
     pub fn new() -> Self {
-        let enigo = Enigo::new(&Settings::default()).expect("Failed to initialize Enigo");
-        Self { enigo }
+        let (tx, rx) = mpsc::channel();
+        thread::Builder::new()
+            .name("keystroke-worker".into())
+            .spawn(move || keystroke_worker(rx))
+            .expect("Failed to start keystroke worker thread");
+        Self { tx }
+    }
+
+    fn send(&self, cmd: KeystrokeCmd) {
+        if let Err(e) = self.tx.send(cmd) {
+            warn!("Keystroke worker unavailable: {}", e);
+        }
     }
 
     /// Send a single key press
-    pub fn send_key(&mut self, key: &Key) {
-        let enigo_key = key_to_enigo(key);
-        debug!("Sending key: {:?}", enigo_key);
-        let _ = self.enigo.key(enigo_key, enigo::Direction::Click);
+    pub fn send_key(&self, key: &Key) {
+        self.send(KeystrokeCmd::Key(key.clone()));
     }
 
     /// Send a keyboard shortcut (key with optional modifiers)
-    pub fn send_shortcut(&mut self, shortcut: &KeyboardShortcut) {
-        debug!("Sending shortcut: {:?}", shortcut);
-
-        // First, ensure all modifiers are released (clean slate)
-        // This helps when previous shortcuts may have left modifier state
-        self.release_all_modifiers();
-
-        // Build list of modifiers to press
-        let mut modifiers = Vec::new();
-        if shortcut.cmd {
-            modifiers.push(EnigoKey::Meta);
-        }
-        if shortcut.ctrl {
-            modifiers.push(EnigoKey::Control);
-        }
-        if shortcut.alt {
-            modifiers.push(EnigoKey::Alt);
-        }
-        if shortcut.shift {
-            modifiers.push(EnigoKey::Shift);
-        }
-
-        let main_key = key_to_enigo(&shortcut.key);
-        self.send_key_with_modifiers(&modifiers, main_key);
-    }
-
-    /// Release all modifier keys to ensure clean state
-    fn release_all_modifiers(&mut self) {
-        let _ = self.enigo.key(EnigoKey::Meta, enigo::Direction::Release);
-        let _ = self.enigo.key(EnigoKey::Control, enigo::Direction::Release);
-        let _ = self.enigo.key(EnigoKey::Alt, enigo::Direction::Release);
-        let _ = self.enigo.key(EnigoKey::Shift, enigo::Direction::Release);
-        let _ = self.enigo.key(EnigoKey::RCommand, enigo::Direction::Release);
-        let _ = self.enigo.key(EnigoKey::RControl, enigo::Direction::Release);
+    pub fn send_shortcut(&self, shortcut: &KeyboardShortcut) {
+        self.send(KeystrokeCmd::Shortcut(shortcut.clone()));
     }
 
     /// Parse and send a shortcut string like "Cmd+C" or "Enter"
-    pub fn send_shortcut_string(&mut self, shortcut_str: &str) -> bool {
-        if let Some(shortcut) = KeyboardShortcut::parse(shortcut_str) {
-            self.send_shortcut(&shortcut);
+    pub fn send_shortcut_string(&self, shortcut_str: &str) -> bool {
+        if KeyboardShortcut::parse(shortcut_str).is_some() {
+            self.send(KeystrokeCmd::ShortcutString(shortcut_str.to_string()));
             true
         } else {
             debug!("Failed to parse shortcut: {}", shortcut_str);
@@ -183,164 +190,101 @@ impl KeystrokeSender {
     }
 
     /// Send text as typed characters
-    pub fn send_text(&mut self, text: &str) {
-        debug!("Sending text: {}", text);
-        let _ = self.enigo.text(text);
+    pub fn send_text(&self, text: &str) {
+        self.send(KeystrokeCmd::Text(text.to_string()));
     }
 
     /// Send Shift+Tab
-    pub fn send_shift_tab(&mut self) {
-        debug!("Sending Shift+Tab");
-        let _ = self.enigo.key(EnigoKey::Shift, enigo::Direction::Press);
-        let _ = self.enigo.key(EnigoKey::Tab, enigo::Direction::Click);
-        let _ = self.enigo.key(EnigoKey::Shift, enigo::Direction::Release);
+    pub fn send_shift_tab(&self) {
+        self.send(KeystrokeCmd::ShiftTab);
     }
 
     /// Send Alt+M (Option+M on macOS) - Toggle permission modes
-    pub fn send_alt_m(&mut self) {
-        debug!("Sending Alt+M (toggle permission modes)");
-        let _ = self.enigo.key(EnigoKey::Alt, enigo::Direction::Press);
-        let _ = self
-            .enigo
-            .key(EnigoKey::Unicode('m'), enigo::Direction::Click);
-        let _ = self.enigo.key(EnigoKey::Alt, enigo::Direction::Release);
+    pub fn send_alt_m(&self) {
+        self.send(KeystrokeCmd::AltM);
     }
 
     /// Send Escape sequence for Alt+M (for terminals that use escape sequences)
-    pub fn send_escape_m(&mut self) {
-        debug!("Sending Escape+M (meta key sequence)");
-        let _ = self.enigo.key(EnigoKey::Escape, enigo::Direction::Click);
-        std::thread::sleep(Duration::from_millis(10));
-        let _ = self
-            .enigo
-            .key(EnigoKey::Unicode('m'), enigo::Direction::Click);
-    }
-
-    /// Send a key with modifiers
-    pub fn send_key_with_modifiers(&mut self, modifiers: &[EnigoKey], key: EnigoKey) {
-        // Press modifiers
-        for modifier in modifiers {
-            let _ = self.enigo.key(*modifier, enigo::Direction::Press);
-        }
-
-        // Small delay to ensure modifiers are registered
-        std::thread::sleep(Duration::from_millis(10));
-
-        // Press and release the main key
-        let _ = self.enigo.key(key, enigo::Direction::Click);
-
-        // Small delay before releasing modifiers
-        std::thread::sleep(Duration::from_millis(10));
-
-        // Release modifiers in reverse order
-        for modifier in modifiers.iter().rev() {
-            let _ = self.enigo.key(*modifier, enigo::Direction::Release);
-        }
-
-        // Delay after releasing to ensure system processes the release
-        // before any subsequent keystrokes
-        std::thread::sleep(Duration::from_millis(20));
+    pub fn send_escape_m(&self) {
+        self.send(KeystrokeCmd::EscapeM);
     }
 
     // === Zoom controls ===
 
-    pub fn zoom_in(&mut self) {
-        debug!("Zoom in: Cmd++");
-        self.send_key_with_modifiers(&[EnigoKey::Meta], EnigoKey::Unicode('+'));
+    pub fn zoom_in(&self) {
+        self.send(KeystrokeCmd::ZoomIn);
     }
 
-    pub fn zoom_out(&mut self) {
-        debug!("Zoom out: Cmd+-");
-        self.send_key_with_modifiers(&[EnigoKey::Meta], EnigoKey::Unicode('-'));
+    pub fn zoom_out(&self) {
+        self.send(KeystrokeCmd::ZoomOut);
     }
 
-    pub fn reset_zoom(&mut self) {
-        debug!("Reset zoom: Cmd+0");
-        self.send_key_with_modifiers(&[EnigoKey::Meta], EnigoKey::Unicode('0'));
+    pub fn reset_zoom(&self) {
+        self.send(KeystrokeCmd::ResetZoom);
     }
 
-    pub fn select_all(&mut self) {
-        debug!("Select all: Cmd+A");
-        self.send_key_with_modifiers(&[EnigoKey::Meta], EnigoKey::Unicode('a'));
+    pub fn select_all(&self) {
+        self.send(KeystrokeCmd::SelectAll);
     }
 
     /// Send Ctrl+U (Unix line kill - clears input line)
-    pub fn send_ctrl_u(&mut self) {
-        debug!("Sending Ctrl+U (line kill)");
-        self.send_key_with_modifiers(&[EnigoKey::Control], EnigoKey::Unicode('u'));
+    pub fn send_ctrl_u(&self) {
+        self.send(KeystrokeCmd::CtrlU);
     }
 
     /// Send Cmd+Z (Undo)
-    pub fn send_undo(&mut self) {
-        debug!("Sending Cmd+Z (undo)");
-        self.send_key_with_modifiers(&[EnigoKey::Meta], EnigoKey::Unicode('z'));
+    pub fn send_undo(&self) {
+        self.send(KeystrokeCmd::Undo);
     }
 
     // === Convenience methods ===
 
-    pub fn send_accept(&mut self) {
+    pub fn send_accept(&self) {
         self.send_text("y");
-        std::thread::sleep(Duration::from_millis(10));
-        let _ = self.enigo.key(EnigoKey::Return, enigo::Direction::Click);
+        self.send_key(&Key::Enter);
     }
 
-    pub fn send_reject(&mut self) {
+    pub fn send_reject(&self) {
         self.send_text("n");
-        std::thread::sleep(Duration::from_millis(10));
-        let _ = self.enigo.key(EnigoKey::Return, enigo::Direction::Click);
+        self.send_key(&Key::Enter);
     }
 
-    pub fn send_stop(&mut self) {
-        let _ = self.enigo.key(EnigoKey::Escape, enigo::Direction::Click);
+    pub fn send_stop(&self) {
+        self.send_key(&Key::Escape);
     }
 
-    pub fn send_retry(&mut self) {
-        let _ = self.enigo.key(EnigoKey::UpArrow, enigo::Direction::Click);
-        std::thread::sleep(Duration::from_millis(50));
-        let _ = self.enigo.key(EnigoKey::Return, enigo::Direction::Click);
+    pub fn send_retry(&self) {
+        self.send(KeystrokeCmd::Retry);
     }
 
-    pub fn send_clear(&mut self) {
-        self.send_text("/clear");
-        let _ = self.enigo.key(EnigoKey::Return, enigo::Direction::Click);
+    pub fn send_clear(&self) {
+        self.send(KeystrokeCmd::Clear);
     }
 
-    pub fn send_rewind(&mut self) {
-        let _ = self.enigo.key(EnigoKey::Escape, enigo::Direction::Click);
-        std::thread::sleep(Duration::from_millis(100));
-        let _ = self.enigo.key(EnigoKey::Escape, enigo::Direction::Click);
+    pub fn send_rewind(&self) {
+        self.send(KeystrokeCmd::Rewind);
     }
 
-    pub fn navigate_history(&mut self, direction: i8) {
-        let key = if direction > 0 {
-            EnigoKey::DownArrow
-        } else {
-            EnigoKey::UpArrow
-        };
-        let _ = self.enigo.key(key, enigo::Direction::Click);
+    pub fn navigate_history(&self, direction: i8) {
+        self.send(KeystrokeCmd::NavigateHistory(direction));
     }
 
-    pub fn scroll_output(&mut self, direction: i8) {
-        let key = if direction > 0 {
-            EnigoKey::PageDown
-        } else {
-            EnigoKey::PageUp
-        };
-        let _ = self.enigo.key(key, enigo::Direction::Click);
+    pub fn scroll_output(&self, direction: i8) {
+        self.send(KeystrokeCmd::ScrollOutput(direction));
     }
 
-    pub fn send_model_switch(&mut self, model: &str) {
-        self.send_text(&format!("/model {}", model));
-        let _ = self.enigo.key(EnigoKey::Return, enigo::Direction::Click);
+    pub fn send_model_switch(&self, model: &str) {
+        self.send(KeystrokeCmd::ModelSwitch(model.to_string()));
     }
 
     /// Send double Right Command to trigger dictation
-    pub fn send_dictation_toggle(&mut self) {
-        debug!("Sending double Right Command for dictation");
-        // RCommand is Right Command key
-        let _ = self.enigo.key(EnigoKey::RCommand, enigo::Direction::Click);
-        std::thread::sleep(Duration::from_millis(100));
-        let _ = self.enigo.key(EnigoKey::RCommand, enigo::Direction::Click);
+    pub fn send_dictation_toggle(&self) {
+        self.send(KeystrokeCmd::DictationToggle);
+    }
+
+    /// Warm up enigo then toggle dictation (first-use path)
+    pub fn send_dictation_warmup(&self) {
+        self.send(KeystrokeCmd::DictationWarmup);
     }
 }
 
@@ -348,6 +292,178 @@ impl Default for KeystrokeSender {
     fn default() -> Self {
         Self::new()
     }
+}
+
+fn keystroke_worker(rx: mpsc::Receiver<KeystrokeCmd>) {
+    let mut enigo = Enigo::new(&Settings::default()).expect("Failed to initialize Enigo");
+
+    while let Ok(cmd) = rx.recv() {
+        execute(&mut enigo, cmd);
+    }
+}
+
+fn execute(enigo: &mut Enigo, cmd: KeystrokeCmd) {
+    match cmd {
+        KeystrokeCmd::Key(key) => {
+            let enigo_key = key_to_enigo(&key);
+            debug!("Sending key: {:?}", enigo_key);
+            let _ = enigo.key(enigo_key, enigo::Direction::Click);
+        }
+        KeystrokeCmd::Text(text) => {
+            debug!("Sending text: {}", text);
+            let _ = enigo.text(&text);
+        }
+        KeystrokeCmd::Shortcut(shortcut) => {
+            send_shortcut(enigo, &shortcut);
+        }
+        KeystrokeCmd::ShortcutString(s) => {
+            if let Some(shortcut) = KeyboardShortcut::parse(&s) {
+                send_shortcut(enigo, &shortcut);
+            }
+        }
+        KeystrokeCmd::ShiftTab => {
+            debug!("Sending Shift+Tab");
+            let _ = enigo.key(EnigoKey::Shift, enigo::Direction::Press);
+            let _ = enigo.key(EnigoKey::Tab, enigo::Direction::Click);
+            let _ = enigo.key(EnigoKey::Shift, enigo::Direction::Release);
+        }
+        KeystrokeCmd::AltM => {
+            debug!("Sending Alt+M (toggle permission modes)");
+            let _ = enigo.key(EnigoKey::Alt, enigo::Direction::Press);
+            let _ = enigo.key(EnigoKey::Unicode('m'), enigo::Direction::Click);
+            let _ = enigo.key(EnigoKey::Alt, enigo::Direction::Release);
+        }
+        KeystrokeCmd::EscapeM => {
+            debug!("Sending Escape+M (meta key sequence)");
+            let _ = enigo.key(EnigoKey::Escape, enigo::Direction::Click);
+            thread::sleep(Duration::from_millis(10));
+            let _ = enigo.key(EnigoKey::Unicode('m'), enigo::Direction::Click);
+        }
+        KeystrokeCmd::ZoomIn => {
+            debug!("Zoom in: Cmd++");
+            send_key_with_modifiers(enigo, &[EnigoKey::Meta], EnigoKey::Unicode('+'));
+        }
+        KeystrokeCmd::ZoomOut => {
+            debug!("Zoom out: Cmd+-");
+            send_key_with_modifiers(enigo, &[EnigoKey::Meta], EnigoKey::Unicode('-'));
+        }
+        KeystrokeCmd::ResetZoom => {
+            debug!("Reset zoom: Cmd+0");
+            send_key_with_modifiers(enigo, &[EnigoKey::Meta], EnigoKey::Unicode('0'));
+        }
+        KeystrokeCmd::SelectAll => {
+            debug!("Select all: Cmd+A");
+            send_key_with_modifiers(enigo, &[EnigoKey::Meta], EnigoKey::Unicode('a'));
+        }
+        KeystrokeCmd::CtrlU => {
+            debug!("Sending Ctrl+U (line kill)");
+            send_key_with_modifiers(enigo, &[EnigoKey::Control], EnigoKey::Unicode('u'));
+        }
+        KeystrokeCmd::Undo => {
+            debug!("Sending Cmd+Z (undo)");
+            send_key_with_modifiers(enigo, &[EnigoKey::Meta], EnigoKey::Unicode('z'));
+        }
+        KeystrokeCmd::Retry => {
+            let _ = enigo.key(EnigoKey::UpArrow, enigo::Direction::Click);
+            thread::sleep(Duration::from_millis(50));
+            let _ = enigo.key(EnigoKey::Return, enigo::Direction::Click);
+        }
+        KeystrokeCmd::Clear => {
+            let _ = enigo.text("/clear");
+            let _ = enigo.key(EnigoKey::Return, enigo::Direction::Click);
+        }
+        KeystrokeCmd::Rewind => {
+            let _ = enigo.key(EnigoKey::Escape, enigo::Direction::Click);
+            thread::sleep(Duration::from_millis(100));
+            let _ = enigo.key(EnigoKey::Escape, enigo::Direction::Click);
+        }
+        KeystrokeCmd::NavigateHistory(direction) => {
+            let key = if direction > 0 {
+                EnigoKey::DownArrow
+            } else {
+                EnigoKey::UpArrow
+            };
+            let _ = enigo.key(key, enigo::Direction::Click);
+        }
+        KeystrokeCmd::ScrollOutput(direction) => {
+            let key = if direction > 0 {
+                EnigoKey::PageDown
+            } else {
+                EnigoKey::PageUp
+            };
+            let _ = enigo.key(key, enigo::Direction::Click);
+        }
+        KeystrokeCmd::ModelSwitch(model) => {
+            let _ = enigo.text(&format!("/model {}", model));
+            thread::sleep(Duration::from_millis(150));
+            let _ = enigo.key(EnigoKey::Return, enigo::Direction::Click);
+        }
+        KeystrokeCmd::DictationToggle => {
+            send_dictation_toggle(enigo);
+        }
+        KeystrokeCmd::DictationWarmup => {
+            debug!("First dictation use - warming up enigo");
+            send_dictation_toggle(enigo);
+            thread::sleep(Duration::from_millis(200));
+            send_dictation_toggle(enigo);
+        }
+    }
+}
+
+fn send_shortcut(enigo: &mut Enigo, shortcut: &KeyboardShortcut) {
+    debug!("Sending shortcut: {:?}", shortcut);
+
+    // First, ensure all modifiers are released (clean slate)
+    release_all_modifiers(enigo);
+
+    let mut modifiers = Vec::new();
+    if shortcut.cmd {
+        modifiers.push(EnigoKey::Meta);
+    }
+    if shortcut.ctrl {
+        modifiers.push(EnigoKey::Control);
+    }
+    if shortcut.alt {
+        modifiers.push(EnigoKey::Alt);
+    }
+    if shortcut.shift {
+        modifiers.push(EnigoKey::Shift);
+    }
+
+    let main_key = key_to_enigo(&shortcut.key);
+    send_key_with_modifiers(enigo, &modifiers, main_key);
+}
+
+fn release_all_modifiers(enigo: &mut Enigo) {
+    let _ = enigo.key(EnigoKey::Meta, enigo::Direction::Release);
+    let _ = enigo.key(EnigoKey::Control, enigo::Direction::Release);
+    let _ = enigo.key(EnigoKey::Alt, enigo::Direction::Release);
+    let _ = enigo.key(EnigoKey::Shift, enigo::Direction::Release);
+    let _ = enigo.key(EnigoKey::RCommand, enigo::Direction::Release);
+    let _ = enigo.key(EnigoKey::RControl, enigo::Direction::Release);
+}
+
+fn send_key_with_modifiers(enigo: &mut Enigo, modifiers: &[EnigoKey], key: EnigoKey) {
+    for modifier in modifiers {
+        let _ = enigo.key(*modifier, enigo::Direction::Press);
+    }
+
+    thread::sleep(Duration::from_millis(10));
+    let _ = enigo.key(key, enigo::Direction::Click);
+    thread::sleep(Duration::from_millis(10));
+
+    for modifier in modifiers.iter().rev() {
+        let _ = enigo.key(*modifier, enigo::Direction::Release);
+    }
+
+    thread::sleep(Duration::from_millis(20));
+}
+
+fn send_dictation_toggle(enigo: &mut Enigo) {
+    debug!("Sending double Right Command for dictation");
+    let _ = enigo.key(EnigoKey::RCommand, enigo::Direction::Click);
+    thread::sleep(Duration::from_millis(100));
+    let _ = enigo.key(EnigoKey::RCommand, enigo::Direction::Click);
 }
 
 /// Convert our Key enum to Enigo's key type

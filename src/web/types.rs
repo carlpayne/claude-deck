@@ -15,12 +15,18 @@ pub enum ConfigChangeEvent {
     Reload,
 }
 
+/// Whether a profile name has built-in default button layouts
+pub fn is_builtin_profile(name: &str) -> bool {
+    matches!(name.to_lowercase().as_str(), "claude" | "slack")
+}
+
 /// Profile summary for listing
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ProfileSummary {
     pub name: String,
     pub match_apps: Vec<String>,
     pub button_count: usize,
+    pub has_defaults: bool,
 }
 
 impl From<&ProfileConfig> for ProfileSummary {
@@ -29,6 +35,7 @@ impl From<&ProfileConfig> for ProfileSummary {
             name: profile.name.clone(),
             match_apps: profile.match_apps.clone(),
             button_count: profile.buttons.len(),
+            has_defaults: is_builtin_profile(&profile.name),
         }
     }
 }
@@ -39,6 +46,7 @@ pub struct ProfileResponse {
     pub name: String,
     pub match_apps: Vec<String>,
     pub buttons: Vec<ButtonConfigEntry>,
+    pub has_defaults: bool,
 }
 
 impl From<&ProfileConfig> for ProfileResponse {
@@ -47,6 +55,7 @@ impl From<&ProfileConfig> for ProfileResponse {
             name: profile.name.clone(),
             match_apps: profile.match_apps.clone(),
             buttons: profile.buttons.clone(),
+            has_defaults: is_builtin_profile(&profile.name),
         }
     }
 }

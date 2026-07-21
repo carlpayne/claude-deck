@@ -1,7 +1,7 @@
 use image::{Rgb, RgbImage};
 use rusttype::Font;
 use std::collections::{HashSet, VecDeque};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use crate::device::{BUTTON_HEIGHT, BUTTON_WIDTH, STRIP_HEIGHT, STRIP_WIDTH};
 use crate::display::renderer::{draw_filled_rect, draw_text, text_width};
@@ -130,8 +130,9 @@ pub struct SnakeGame {
     /// O(1) collision lookup - mirrors snake contents
     body_set: HashSet<Pos>,
     direction: Direction,
-    /// Queue of pending turns (up to 2 buffered, to handle fast input)
-    turn_queue: VecDeque<Direction>,
+    /// Net encoder turns waiting to apply: negative = left, positive = right.
+    /// Each move consumes one step. Rapid clicks accumulate instead of being dropped.
+    pending_turns: i8,
     food: Pos,
     score: u32,
     high_score: u32,
@@ -184,7 +185,7 @@ impl SnakeGame {
             snake: VecDeque::new(),
             body_set: HashSet::with_capacity(GRID_COLS * GRID_ROWS),
             direction: Direction::Right,
-            turn_queue: VecDeque::with_capacity(4),
+            pending_turns: 0,
             food: Pos { x: 0, y: 0 },
             score: 0,
             high_score: 0,
@@ -228,7 +229,7 @@ impl SnakeGame {
         }
 
         self.direction = Direction::Right;
-        self.turn_queue.clear();
+        self.pending_turns = 0;
         self.score = 0;
         self.move_interval_ms = 250;
         self.state = GameState::Playing;
@@ -301,9 +302,13 @@ impl SnakeGame {
     }
 
     fn advance_snake(&mut self) {
-        // Apply next queued turn
-        if let Some(new_dir) = self.turn_queue.pop_front() {
-            self.direction = new_dir;
+        // Apply one pending encoder turn per move (rapid clicks accumulate in pending_turns)
+        if self.pending_turns < 0 {
+            self.direction = self.direction.turn_left();
+            self.pending_turns += 1;
+        } else if self.pending_turns > 0 {
+            self.direction = self.direction.turn_right();
+            self.pending_turns -= 1;
         }
 
         let (dx, dy) = self.direction.delta();
@@ -356,6 +361,12 @@ impl SnakeGame {
                 self.mark_button_for_cell(tail.x, tail.y);
             }
         }
+
+        // Keep draining the turn buffer quickly after a burst of knob clicks
+        if self.pending_turns != 0 {
+            self.nudge_next_move();
+            self.strip_dirty = true;
+        }
     }
 
     fn die(&mut self) {
@@ -373,24 +384,66 @@ impl SnakeGame {
         if self.state != GameState::Playing {
             return;
         }
-        // Buffer up to 3 turns so fast rotations aren't lost
-        if self.turn_queue.len() < 3 {
-            // Base the turn on the last queued direction (or current)
-            let base_dir = self.turn_queue.back().copied().unwrap_or(self.direction);
-            let new_dir = if direction < 0 {
-                base_dir.turn_left()
-            } else {
-                base_dir.turn_right()
-            };
-            self.turn_queue.push_back(new_dir);
-            // Mark strip dirty for immediate HUD feedback
-            self.strip_dirty = true;
+        if direction == 0 {
+            return;
+        }
+
+        // Accumulate clicks: left/right cancel. Cap high enough that a fast spin
+        // isn't silently ignored while moves catch up (one turn applied per move).
+        const MAX_PENDING: i8 = 16;
+        let delta = direction.signum() * (direction.unsigned_abs() as i8).min(8);
+        let prev = self.pending_turns;
+        self.pending_turns = (self.pending_turns + delta).clamp(-MAX_PENDING, MAX_PENDING);
+
+        // Even when saturated, hurry the next move so capacity frees up
+        if self.pending_turns != 0 {
+            self.nudge_next_move();
+        }
+
+        if self.pending_turns == prev {
+            return;
+        }
+
+        // Mark strip dirty for immediate HUD feedback
+        self.strip_dirty = true;
+    }
+
+    /// Cap latency between turn input and the move that applies it
+    fn nudge_next_move(&mut self) {
+        const MAX_TURN_LATENCY_MS: u64 = 20;
+        let interval = self.move_interval_ms;
+        let elapsed = self.last_move.elapsed().as_millis() as u64;
+        if elapsed >= interval {
+            return;
+        }
+        let remaining = interval - elapsed;
+        if remaining > MAX_TURN_LATENCY_MS {
+            let target_elapsed = interval - MAX_TURN_LATENCY_MS;
+            self.last_move = Instant::now() - Duration::from_millis(target_elapsed);
         }
     }
 
-    /// The effective next direction (accounts for queued turns)
+    /// Facing after all pending encoder turns are applied (HUD)
     pub fn effective_direction(&self) -> Direction {
-        self.turn_queue.back().copied().unwrap_or(self.direction)
+        let mut dir = self.direction;
+        if self.pending_turns < 0 {
+            for _ in 0..(-self.pending_turns as u8) {
+                dir = dir.turn_left();
+            }
+        } else {
+            for _ in 0..(self.pending_turns as u8) {
+                dir = dir.turn_right();
+            }
+        }
+        dir
+    }
+
+    pub fn has_pending_turns(&self) -> bool {
+        self.pending_turns != 0
+    }
+
+    pub fn mark_strip_dirty(&mut self) {
+        self.strip_dirty = true;
     }
 
     pub fn handle_button_press(&mut self, _button_id: u8) {

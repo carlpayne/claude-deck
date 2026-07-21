@@ -12,15 +12,6 @@ use crate::display::renderer::{
 
 use store::ProfileConfig;
 
-/// Application profile types
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AppProfile {
-    /// Default Claude Code mode
-    Claude,
-    /// Slack emoji shortcuts mode
-    Slack,
-}
-
 /// Action to perform when a button is pressed
 #[derive(Debug, Clone)]
 pub enum ButtonAction {
@@ -31,21 +22,21 @@ pub enum ButtonAction {
     /// Emoji shortcode (types `:emoji:`) (with optional auto-submit)
     Emoji { value: String, auto_submit: bool },
     /// Custom action handled by the input handler
-    Custom(&'static str),
+    Custom(String),
 }
 
 /// Button configuration for rendering and actions
 #[derive(Debug, Clone)]
 pub struct ButtonConfig {
-    pub label: &'static str,
+    pub label: String,
     pub colors: (Rgb<u8>, Rgb<u8>),
     pub action: ButtonAction,
     /// Optional emoji character for button image
-    pub emoji_image: Option<&'static str>,
+    pub emoji_image: Option<String>,
     /// Optional custom image (base64 data URL)
-    pub custom_image: Option<&'static str>,
+    pub custom_image: Option<String>,
     /// Optional GIF URL for animated button
-    pub gif_url: Option<&'static str>,
+    pub gif_url: Option<String>,
 }
 
 /// Manager for profile configurations
@@ -98,36 +89,23 @@ impl ProfileManager {
         self.profiles.iter().find(|p| p.match_apps.contains(&"*".to_string()))
     }
 
-    /// Get button config for an app, falling back to hardcoded defaults
+    /// Get button config for an app from loaded profiles
     pub fn get_button_config(&self, app_name: &str, button_id: u8) -> ButtonConfig {
-        // Try to find a matching profile with this button configured
         if let Some(profile) = self.find_profile_for_app(app_name) {
             if let Some(config) = profile.get_button(button_id) {
                 return config;
             }
-            // Profile exists but button not configured - return empty button
-            // (don't fall back to hardcoded defaults)
-            return ButtonConfig {
-                label: "---",
-                colors: (GRAY, BRIGHT_GRAY),
-                action: ButtonAction::Custom(""),
-                emoji_image: None,
-                custom_image: None,
-                gif_url: None,
-            };
         }
 
-        // No profile found at all - fall back to hardcoded defaults
-        let profile = get_profile_for_app(app_name);
-        profile.button_config(button_id)
-    }
-}
-
-/// Get the appropriate profile for an application name
-pub fn get_profile_for_app(app_name: &str) -> AppProfile {
-    match app_name {
-        "Slack" => AppProfile::Slack,
-        _ => AppProfile::Claude,
+        // No matching profile / button — empty placeholder
+        ButtonConfig {
+            label: "---".to_string(),
+            colors: (GRAY, BRIGHT_GRAY),
+            action: ButtonAction::Custom(String::new()),
+            emoji_image: None,
+            custom_image: None,
+            gif_url: None,
+        }
     }
 }
 
@@ -171,59 +149,8 @@ const SLACK_BUTTONS: [SlackButtonDef; 10] = [
     ("🙏", ":pray:", (BLUE, BRIGHT_BLUE), "🙏"),
 ];
 
-impl AppProfile {
-    /// Get button configuration for a specific button ID
-    pub fn button_config(&self, button_id: u8) -> ButtonConfig {
-        match self {
-            AppProfile::Slack => {
-                let idx = button_id as usize;
-                if idx < SLACK_BUTTONS.len() {
-                    let (label, emoji, colors, image) = SLACK_BUTTONS[idx];
-                    ButtonConfig {
-                        label,
-                        colors,
-                        action: ButtonAction::Emoji {
-                            value: emoji.to_string(),
-                            auto_submit: false,
-                        },
-                        emoji_image: Some(image),
-                        custom_image: None,
-                        gif_url: None,
-                    }
-                } else {
-                    // Fallback for any unmapped buttons
-                    ButtonConfig {
-                        label: "?",
-                        colors: (GRAY, BRIGHT_GRAY),
-                        action: ButtonAction::Text {
-                            value: "".to_string(),
-                            auto_submit: false,
-                        },
-                        emoji_image: None,
-                        custom_image: None,
-                        gif_url: None,
-                    }
-                }
-            }
-            AppProfile::Claude => {
-                // Claude mode uses default button rendering
-                // Return config with Custom action to indicate default handling
-                let (label, colors) = claude_button_config(button_id);
-                ButtonConfig {
-                    label,
-                    colors,
-                    action: ButtonAction::Custom(label),
-                    emoji_image: None,
-                    custom_image: None,
-                    gif_url: None,
-                }
-            }
-        }
-    }
-}
-
 /// Get Claude mode button configuration (label and colors)
-pub fn claude_button_config(button_id: u8) -> (&'static str, (Rgb<u8>, Rgb<u8>)) {
+fn claude_button_config(button_id: u8) -> (&'static str, (Rgb<u8>, Rgb<u8>)) {
     match button_id {
         0 => ("ACCEPT", (GREEN, BRIGHT_GREEN)),
         1 => ("REJECT", (RED, BRIGHT_RED)),

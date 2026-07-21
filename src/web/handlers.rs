@@ -14,10 +14,10 @@ use crate::profiles::{generate_default_profiles, ProfileManager};
 
 use super::types::{
     get_action_types, get_available_keys, get_builtin_actions, get_color_presets,
-    get_modifier_keys, ActionsResponse, ApiResponse, AppsResponse, ColorsResponse,
-    ConfigChangeEvent, CreateProfileRequest, GiphyGif, GiphySearchQuery, GiphySearchResponse,
-    HasDefaultsResponse, InstalledApp, ProfileResponse, ProfileSummary, UpdateButtonRequest,
-    UpdateProfileRequest,
+    get_modifier_keys, is_builtin_profile, ActionsResponse, ApiResponse, AppsResponse,
+    ColorsResponse, ConfigChangeEvent, CreateProfileRequest, GiphyGif, GiphySearchQuery,
+    GiphySearchResponse, HasDefaultsResponse, InstalledApp, ProfileResponse, ProfileSummary,
+    UpdateButtonRequest, UpdateProfileRequest,
 };
 
 /// Shared application state for web handlers
@@ -253,13 +253,11 @@ async fn save_config(state: &AppState) {
     }
 }
 
-/// Built-in profile names that have known default configurations
-const BUILTIN_PROFILES: &[&str] = &["claude", "slack"];
-
 /// GET /api/profiles/:name/has-defaults - Check if profile has known defaults
 pub async fn has_profile_defaults(Path(name): Path<String>) -> Json<ApiResponse<HasDefaultsResponse>> {
-    let has_defaults = BUILTIN_PROFILES.contains(&name.to_lowercase().as_str());
-    Json(ApiResponse::ok(HasDefaultsResponse { has_defaults }))
+    Json(ApiResponse::ok(HasDefaultsResponse {
+        has_defaults: is_builtin_profile(&name),
+    }))
 }
 
 /// POST /api/profiles/:name/reset - Reset profile to default button configuration
@@ -269,7 +267,7 @@ pub async fn reset_profile(
 ) -> Json<ApiResponse<ProfileResponse>> {
     let name_lower = name.to_lowercase();
 
-    if !BUILTIN_PROFILES.contains(&name_lower.as_str()) {
+    if !is_builtin_profile(&name_lower) {
         return Json(ApiResponse::error(format!(
             "Profile '{}' does not have known defaults",
             name
@@ -323,32 +321,35 @@ pub async fn reset_profile(
 
 /// GET /api/apps - List installed macOS applications
 pub async fn list_apps() -> Json<ApiResponse<AppsResponse>> {
-    let apps_dir = std::path::Path::new("/Applications");
+    let apps = tokio::task::spawn_blocking(scan_installed_apps)
+        .await
+        .unwrap_or_else(|_| Vec::new());
 
+    Json(ApiResponse::ok(AppsResponse { apps }))
+}
+
+fn scan_installed_apps() -> Vec<InstalledApp> {
+    let apps_dir = std::path::Path::new("/Applications");
     let mut apps: Vec<InstalledApp> = Vec::new();
 
     if let Ok(entries) = std::fs::read_dir(apps_dir) {
         for entry in entries.flatten() {
             let path = entry.path();
-            if path.extension().map_or(false, |ext| ext == "app") {
+            if path.extension().is_some_and(|ext| ext == "app") {
                 let name = path
                     .file_stem()
                     .and_then(|s| s.to_str())
                     .unwrap_or("Unknown")
                     .to_string();
 
-                // Try to read bundle ID from Info.plist
                 let bundle_id = read_bundle_id(&path);
-
                 apps.push(InstalledApp { name, bundle_id });
             }
         }
     }
 
-    // Sort alphabetically
     apps.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
-
-    Json(ApiResponse::ok(AppsResponse { apps }))
+    apps
 }
 
 /// Read bundle ID from an app's Info.plist
@@ -461,7 +462,7 @@ pub async fn delete_profile(
     let name_lower = name.to_lowercase();
 
     // Prevent deletion of built-in profiles
-    if BUILTIN_PROFILES.contains(&name_lower.as_str()) {
+    if is_builtin_profile(&name_lower) {
         return Json(ApiResponse::error(format!(
             "Cannot delete built-in profile '{}'",
             name
@@ -683,42 +684,47 @@ pub async fn search_giphy(
     }
 }
 
+fn default_status_json() -> serde_json::Value {
+    serde_json::json!({
+        "task": "READY",
+        "tool_detail": null,
+        "waiting_for_input": false,
+        "model": "unknown",
+        "connected": false
+    })
+}
+
+fn read_status_file() -> serde_json::Value {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    let state_path = std::path::PathBuf::from(home).join(".claude-deck/state.json");
+
+    match std::fs::read_to_string(&state_path) {
+        Ok(content) => serde_json::from_str(&content).unwrap_or_else(|_| default_status_json()),
+        Err(_) => default_status_json(),
+    }
+}
+
 /// GET /api/status - Get current Claude status from state file + live device state
 pub async fn get_status(
     State(state): State<Arc<AppState>>,
 ) -> Json<ApiResponse<serde_json::Value>> {
-    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
-    let state_path = std::path::PathBuf::from(home).join(".claude-deck/state.json");
-
-    let mut status = match std::fs::read_to_string(&state_path) {
-        Ok(content) => match serde_json::from_str::<serde_json::Value>(&content) {
-            Ok(state) => state,
-            Err(_) => serde_json::json!({
-                "task": "READY",
-                "tool_detail": null,
-                "waiting_for_input": false,
-                "model": "unknown",
-                "connected": false
-            }),
-        },
-        Err(_) => {
-            serde_json::json!({
-                "task": "READY",
-                "tool_detail": null,
-                "waiting_for_input": false,
-                "model": "unknown",
-                "connected": false
-            })
-        }
-    };
+    let mut status = tokio::task::spawn_blocking(read_status_file)
+        .await
+        .unwrap_or_else(|_| default_status_json());
 
     // Augment with live device state (volume, connected status)
     let device = state.device_state.read().await;
     if let Some(obj) = status.as_object_mut() {
         obj.insert("volume".to_string(), serde_json::json!(device.volume));
-        obj.insert("volume_display_active".to_string(), serde_json::json!(device.is_volume_display_active()));
+        obj.insert(
+            "volume_display_active".to_string(),
+            serde_json::json!(device.is_volume_display_active()),
+        );
         obj.insert("brightness".to_string(), serde_json::json!(device.brightness));
-        obj.insert("brightness_display_active".to_string(), serde_json::json!(device.is_brightness_display_active()));
+        obj.insert(
+            "brightness_display_active".to_string(),
+            serde_json::json!(device.is_brightness_display_active()),
+        );
         obj.insert("connected".to_string(), serde_json::json!(device.connected));
     }
 

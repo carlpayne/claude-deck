@@ -4,7 +4,6 @@ use std::sync::{Arc, RwLock as StdRwLock};
 use std::time::{Duration, Instant};
 use tokio::process::Command;
 use tokio::sync::RwLock;
-use tokio::time::sleep;
 use tracing::{debug, info, warn};
 
 use crate::device::InputEvent;
@@ -60,28 +59,39 @@ impl InputHandler {
     /// Check for pending long-press actions and fire them immediately
     /// Call this periodically from the main loop
     pub async fn check_long_press(&mut self) -> Result<bool> {
+        // Nothing held — skip profile scans entirely
+        if self.button_press_times.is_empty() {
+            return Ok(false);
+        }
+
+        // Only look up MIC buttons once a press has actually reached the threshold
+        let ready: Vec<u8> = self
+            .button_press_times
+            .iter()
+            .filter(|(button, press_time)| {
+                !self.long_press_fired.contains(button)
+                    && press_time.elapsed() >= LONG_PRESS_DURATION
+            })
+            .map(|(&button, _)| button)
+            .collect();
+
+        if ready.is_empty() {
+            return Ok(false);
+        }
+
+        let mic_buttons = self.find_mic_buttons().await;
         let mut action_fired = false;
 
-        // Find buttons with MIC action (support long-press to clear line)
-        let mic_buttons = self.find_mic_buttons().await;
-
-        for button in mic_buttons {
-            // Skip if already fired for this press
-            if self.long_press_fired.contains(&button) {
+        for button in ready {
+            if !mic_buttons.contains(&button) {
                 continue;
             }
 
-            // Check if button is being held long enough
-            if let Some(press_time) = self.button_press_times.get(&button) {
-                if press_time.elapsed() >= LONG_PRESS_DURATION {
-                    // Fire the long-press action now (clear line)
-                    self.clear_current_line();
-                    self.state.write().await.flash_button(button);
-                    action_fired = true;
-                    // Mark as fired so we don't fire again
-                    self.long_press_fired.insert(button);
-                }
-            }
+            // Fire the long-press action now (clear line)
+            self.clear_current_line();
+            self.state.write().await.flash_button(button);
+            action_fired = true;
+            self.long_press_fired.insert(button);
         }
 
         Ok(action_fired)
@@ -95,8 +105,7 @@ impl InputHandler {
         let mut mic_buttons = Vec::new();
         if let Some(profile) = manager.find_profile_for_app(&state.focused_app) {
             for button in &profile.buttons {
-                let config = button.to_button_config();
-                if matches!(&config.action, ButtonAction::Custom(action) if *action == "MIC") {
+                if button.is_mic_action() {
                     mic_buttons.push(button.position);
                 }
             }
@@ -201,8 +210,8 @@ impl InputHandler {
             ("ACCEPT", _) => self.send_accept().await?,
             ("REJECT", _) => self.send_reject().await?,
             ("STOP", _) => self.send_stop(),
-            ("RETRY", _) => self.send_retry().await,
-            ("REWIND", _) => self.send_rewind().await,
+            ("RETRY", _) => self.send_retry(),
+            ("REWIND", _) => self.send_rewind(),
 
             // Bottom row - with long-press variants
             ("TRUST", _) => self.send_trust(),
@@ -305,11 +314,9 @@ impl InputHandler {
         self.send_key(&Key::Escape);
     }
 
-    async fn send_retry(&mut self) {
+    fn send_retry(&mut self) {
         info!("RETRY: sending Up + Enter");
-        self.send_key(&Key::Up);
-        sleep(Duration::from_millis(50)).await;
-        self.send_key(&Key::Enter);
+        self.keystroke_sender.send_retry();
     }
 
     fn send_enter(&mut self) {
@@ -327,11 +334,9 @@ impl InputHandler {
         self.send_key(&Key::Tab);
     }
 
-    async fn send_rewind(&mut self) {
+    fn send_rewind(&mut self) {
         info!("REWIND: sending double Escape");
-        self.send_key(&Key::Escape);
-        sleep(Duration::from_millis(100)).await;
-        self.send_key(&Key::Escape);
+        self.keystroke_sender.send_rewind();
     }
 
     fn clear_current_line(&mut self) {
@@ -395,14 +400,13 @@ impl InputHandler {
 
         // First use needs a warmup - send toggle twice to prime enigo
         if self.dictation_state.first_use {
-            debug!("First dictation use - warming up enigo");
-            self.keystroke_sender.send_dictation_toggle();
-            sleep(Duration::from_millis(200)).await;
+            self.keystroke_sender.send_dictation_warmup();
             self.dictation_state.first_use = false;
+        } else {
+            self.keystroke_sender.send_dictation_toggle();
         }
-        self.keystroke_sender.send_dictation_toggle();
 
-        // Toggle visual state
+        // Toggle visual state immediately; keystrokes run on the worker thread
         self.dictation_state.active = !self.dictation_state.active;
         self.state.write().await.dictation_active = self.dictation_state.active;
         info!(
@@ -454,10 +458,7 @@ impl InputHandler {
 
         if was_selecting {
             info!("Switching to model: {}", model);
-            self.send_text(&format!("/model {}", model));
-            // Delay to ensure text is fully processed by the system before Enter
-            sleep(Duration::from_millis(150)).await;
-            self.send_key(&Key::Enter);
+            self.keystroke_sender.send_model_switch(&model);
         } else {
             debug!("confirm_model: not in selection mode, ignoring");
         }

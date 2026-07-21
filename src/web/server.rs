@@ -2,21 +2,21 @@
 
 use axum::{
     extract::Request,
+    http::{HeaderValue, Method},
     routing::{delete, get, post, put},
     Router,
 };
 use std::net::SocketAddr;
 use std::sync::{Arc, RwLock as StdRwLock};
 use tokio::sync::{mpsc, RwLock as TokioRwLock};
+use tower_http::compression::CompressionLayer;
 use tower_http::cors::{Any, CorsLayer};
 use tracing::info;
 
 use crate::config::Config;
 use crate::profiles::{generate_default_profiles, ProfileManager};
 
-use super::handlers::{
-    self, AppState,
-};
+use super::handlers::{self, AppState};
 use super::static_files::serve_static;
 use super::types::ConfigChangeEvent;
 
@@ -37,10 +37,22 @@ pub async fn start_server(
         device_state,
     });
 
-    // CORS layer for development
+    // Local-only origins (same host as the config UI)
+    let local_origin = format!("http://127.0.0.1:{}", port);
+    let localhost_origin = format!("http://localhost:{}", port);
     let cors = CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods(Any)
+        .allow_origin([
+            HeaderValue::from_str(&local_origin).unwrap_or(HeaderValue::from_static("http://127.0.0.1:9845")),
+            HeaderValue::from_str(&localhost_origin)
+                .unwrap_or(HeaderValue::from_static("http://localhost:9845")),
+        ])
+        .allow_methods([
+            Method::GET,
+            Method::POST,
+            Method::PUT,
+            Method::DELETE,
+            Method::OPTIONS,
+        ])
         .allow_headers(Any);
 
     // API routes
@@ -85,6 +97,7 @@ pub async fn start_server(
     let app = Router::new()
         .nest("/api", api_routes)
         .fallback(static_handler)
+        .layer(CompressionLayer::new())
         .layer(cors);
 
     info!("Web UI available at http://localhost:{}", port);
